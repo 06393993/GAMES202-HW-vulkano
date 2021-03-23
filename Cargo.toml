@@ -1,0 +1,17 @@
+[package]
+name = "rust-gfx-test"
+version = "0.1.0"
+authors = ["WI_Se"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+imgui = "*"
+imgui-vulkano-renderer = "0.7.0"
+imgui-winit-support = "0.7.0"
+vulkano = "0.20.0"
+vulkano-shaders = "0.20.0"
+vulkano-win = "0.20.0"
+winit = "0.24.0"
+clipboard = "*"
