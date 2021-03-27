@@ -1,15 +1,13 @@
 use imgui::*;
+use std::time::{Instant, Duration};
 
 mod support {
     use imgui::{Context, FontConfig, FontGlyphRanges, FontSource, Ui};
     use imgui_winit_support::{HiDpiMode, WinitPlatform};
-    use std::time::Duration;
-    use std::time::Instant;
 
     use vulkano::command_buffer::AutoCommandBufferBuilder;
     use vulkano::device::Queue;
     use vulkano::device::{Device, DeviceExtensions};
-    use vulkano::format::Format;
     use vulkano::image::{ImageUsage, SwapchainImage};
     use vulkano::instance::{Instance, PhysicalDevice};
     use vulkano::swapchain;
@@ -28,7 +26,7 @@ mod support {
 
     use std::sync::Arc;
 
-    use imgui_vulkano_renderer::Renderer;
+    use imgui_vulkano_renderer::{Renderer as UiRenderer};
 
     mod clipboard {
         use clipboard::{ClipboardContext, ClipboardProvider};
@@ -61,7 +59,7 @@ mod support {
         pub images: Vec<Arc<SwapchainImage<Window>>>,
         pub imgui: Context,
         pub platform: WinitPlatform,
-        pub renderer: Renderer,
+        pub ui_renderer: UiRenderer,
         pub font_size: f32,
     }
 
@@ -104,16 +102,12 @@ mod support {
 
         let queue = queues.next().unwrap();
 
-        // not sure why this was needed
-        #[allow(unused_assignments)]
-        let mut format = Format::R8G8B8A8Srgb;
-
-        let (swapchain, images) = {
+        let (swapchain, images, format) = {
             let caps = surface.capabilities(physical).unwrap();
 
             let alpha = caps.supported_composite_alpha.iter().next().unwrap();
 
-            format = caps.supported_formats[0].0;
+            let format = caps.supported_formats[0].0;
 
             let dimensions: [u32; 2] = surface.window().inner_size().into();
 
@@ -122,7 +116,7 @@ mod support {
                 ..ImageUsage::color_attachment()
             };
 
-            Swapchain::new(
+            let (swapchain, image) = Swapchain::new(
                 device.clone(),
                 surface.clone(),
                 caps.min_image_count,
@@ -133,22 +127,20 @@ mod support {
                 &queue,
                 SurfaceTransform::Identity,
                 alpha,
-                PresentMode::Fifo,
+                PresentMode::Mailbox,
                 FullscreenExclusive::Default,
                 true,
                 ColorSpace::SrgbNonLinear,
             )
-            .unwrap()
+            .unwrap();
+            (swapchain, image, format)
         };
 
         let mut imgui = Context::create();
         imgui.set_ini_filename(None);
 
-        if let Some(backend) = clipboard::init() {
-            imgui.set_clipboard_backend(Box::new(backend));
-        } else {
-            eprintln!("Failed to initialize clipboard");
-        }
+        let clipboard_backend = clipboard::init().expect("Failed to initialize clipboard");
+        imgui.set_clipboard_backend(Box::new(clipboard_backend));
 
         let mut platform = WinitPlatform::init(&mut imgui);
         platform.attach_window(imgui.io_mut(), &surface.window(), HiDpiMode::Rounded);
@@ -175,8 +167,8 @@ mod support {
 
         imgui.io_mut().font_global_scale = (1.0 / hidpi_factor) as f32;
 
-        let renderer = Renderer::init(&mut imgui, device.clone(), queue.clone(), format)
-            .expect("Failed to initialize renderer");
+        let ui_renderer = UiRenderer::init(&mut imgui, device.clone(), queue.clone(), format)
+            .expect("Failed to initialize UI renderer");
 
         System {
             event_loop,
@@ -187,7 +179,7 @@ mod support {
             images,
             imgui,
             platform,
-            renderer,
+            ui_renderer,
             font_size,
         }
     }
@@ -203,18 +195,13 @@ mod support {
                 mut images,
                 mut imgui,
                 mut platform,
-                mut renderer,
+                mut ui_renderer,
                 ..
             } = self;
 
             let mut recreate_swapchain = false;
 
             let mut previous_frame_end = Some(sync::now(device.clone()).boxed());
-
-            let mut last_redraw = Instant::now();
-
-            // target 60 fps
-            let target_frame_time = Duration::from_millis(1000 / 60);
 
             event_loop.run(move |event, _, control_flow| match event {
                 Event::NewEvents(_) => {
@@ -227,16 +214,6 @@ mod support {
                     surface.window().request_redraw();
                 }
                 Event::RedrawRequested(_) => {
-                    let t = Instant::now();
-                    let since_last = t.duration_since(last_redraw);
-                    last_redraw = t;
-
-                    if since_last > target_frame_time {
-                        if since_last < target_frame_time {
-                            std::thread::sleep(target_frame_time - since_last);
-                        }
-                    }
-
                     previous_frame_end.as_mut().unwrap().cleanup_finished();
 
                     if recreate_swapchain {
@@ -286,7 +263,7 @@ mod support {
                         .clear_color_image(images[image_num].clone(), [0.0; 4].into())
                         .expect("Failed to create image clear command");
 
-                    renderer
+                    ui_renderer
                         .draw_commands(
                             &mut cmd_buf_builder,
                             queue.clone(),
@@ -336,19 +313,22 @@ mod support {
 
 fn main() {
     let system = support::init(file!());
+    
+    let mut recent_frame_times = vec![];
+
     system.main_loop(move |_, ui| {
+        let now = Instant::now();
+        recent_frame_times.push(now);
+        recent_frame_times.retain(|frame_time| now.duration_since(*frame_time) < Duration::from_secs(1));
         Window::new(im_str!("Hello world"))
             .size([300.0, 110.0], Condition::FirstUseEver)
             .build(ui, || {
-                ui.text(im_str!("Hello world!"));
-                ui.text(im_str!("こんにちは世界！"));
-                ui.text(im_str!("This...is...imgui-rs!"));
-                ui.separator();
                 let mouse_pos = ui.io().mouse_pos;
                 ui.text(format!(
                     "Mouse Position: ({:.1},{:.1})",
                     mouse_pos[0], mouse_pos[1]
                 ));
+                ui.text(format!("FPS {}", recent_frame_times.len()));
             });
     });
 }
