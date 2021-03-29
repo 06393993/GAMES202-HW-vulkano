@@ -1,5 +1,7 @@
+mod scene_renderer;
+
 use imgui::*;
-use std::time::{Instant, Duration};
+use std::time::{Duration, Instant};
 
 mod support {
     use imgui::{Context, FontConfig, FontGlyphRanges, FontSource, Ui};
@@ -26,7 +28,9 @@ mod support {
 
     use std::sync::Arc;
 
-    use imgui_vulkano_renderer::{Renderer as UiRenderer};
+    use imgui_vulkano_renderer::Renderer as UiRenderer;
+
+    use super::scene_renderer::Renderer as SceneRenderer;
 
     mod clipboard {
         use clipboard::{ClipboardContext, ClipboardProvider};
@@ -61,6 +65,7 @@ mod support {
         pub platform: WinitPlatform,
         pub ui_renderer: UiRenderer,
         pub font_size: f32,
+        pub scene_renderer: SceneRenderer,
     }
 
     pub fn init(title: &str) -> System {
@@ -170,6 +175,14 @@ mod support {
         let ui_renderer = UiRenderer::init(&mut imgui, device.clone(), queue.clone(), format)
             .expect("Failed to initialize UI renderer");
 
+        let scene_renderer = SceneRenderer::init(
+            device.clone(),
+            queue.clone(),
+            format,
+            surface.window().inner_size().width,
+            surface.window().inner_size().height,
+        );
+
         System {
             event_loop,
             device,
@@ -181,11 +194,12 @@ mod support {
             platform,
             ui_renderer,
             font_size,
+            scene_renderer,
         }
     }
 
     impl System {
-        pub fn main_loop<F: FnMut(&mut bool, &mut Ui) + 'static>(self, mut run_ui: F) {
+        pub fn main_loop<F: FnMut(&mut bool, &mut Ui) -> [f32; 3] + 'static>(self, mut run_ui: F) {
             let System {
                 event_loop,
                 device,
@@ -196,6 +210,7 @@ mod support {
                 mut imgui,
                 mut platform,
                 mut ui_renderer,
+                scene_renderer,
                 ..
             } = self;
 
@@ -217,6 +232,7 @@ mod support {
                     previous_frame_end.as_mut().unwrap().cleanup_finished();
 
                     if recreate_swapchain {
+                        // TODO: recreate scene_renderer here
                         let dimensions: [u32; 2] = surface.window().inner_size().into();
                         let (new_swapchain, new_images) =
                             match swapchain.recreate_with_dimensions(dimensions) {
@@ -233,7 +249,7 @@ mod support {
                     let mut ui = imgui.frame();
 
                     let mut run = true;
-                    run_ui(&mut run, &mut ui);
+                    let color = run_ui(&mut run, &mut ui);
                     if !run {
                         *control_flow = ControlFlow::Exit;
                     }
@@ -255,32 +271,45 @@ mod support {
                     platform.prepare_render(&ui, surface.window());
                     let draw_data = ui.render();
 
-                    let mut cmd_buf_builder =
+                    let mut ui_cmd_buf_builder =
                         AutoCommandBufferBuilder::new(device.clone(), queue.family())
-                            .expect("Failed to create command buffer");
-
-                    cmd_buf_builder
-                        .clear_color_image(images[image_num].clone(), [0.0; 4].into())
-                        .expect("Failed to create image clear command");
+                            .expect("Failed to create UI command buffer");
 
                     ui_renderer
                         .draw_commands(
-                            &mut cmd_buf_builder,
+                            &mut ui_cmd_buf_builder,
                             queue.clone(),
                             images[image_num].clone(),
                             draw_data,
                         )
                         .expect("Rendering failed");
 
-                    let cmd_buf = cmd_buf_builder
+                    let ui_cmd_buf = ui_cmd_buf_builder
                         .build()
-                        .expect("Failed to build command buffer");
+                        .expect("Failed to build UI command buffer");
+
+                    let mut scene_cmd_buf_builder =
+                        AutoCommandBufferBuilder::new(device.clone(), queue.family())
+                            .expect("Failed to create scene renderer command buffer");
+
+                    scene_cmd_buf_builder
+                        .clear_color_image(images[image_num].clone(), [0.0; 4].into())
+                        .unwrap();
+
+                    scene_renderer.draw_commands(
+                        &mut scene_cmd_buf_builder,
+                        images[image_num].clone(),
+                        &color,
+                    );
+                    let scene_cmd_buf = scene_cmd_buf_builder.build().unwrap();
 
                     let future = previous_frame_end
                         .take()
                         .unwrap()
                         .join(acquire_future)
-                        .then_execute(queue.clone(), cmd_buf)
+                        .then_execute(queue.clone(), scene_cmd_buf)
+                        .unwrap()
+                        .then_execute(queue.clone(), ui_cmd_buf)
                         .unwrap()
                         .then_swapchain_present(queue.clone(), swapchain.clone(), image_num)
                         .then_signal_fence_and_flush();
@@ -313,13 +342,16 @@ mod support {
 
 fn main() {
     let system = support::init(file!());
-    
+
     let mut recent_frame_times = vec![];
+    let mut color: [f32; 3] = [0.0, 0.0, 0.0];
+    let mut color_picker_visible = false;
 
     system.main_loop(move |_, ui| {
         let now = Instant::now();
         recent_frame_times.push(now);
-        recent_frame_times.retain(|frame_time| now.duration_since(*frame_time) < Duration::from_secs(1));
+        recent_frame_times
+            .retain(|frame_time| now.duration_since(*frame_time) < Duration::from_secs(1));
         Window::new(im_str!("Hello world"))
             .size([300.0, 110.0], Condition::FirstUseEver)
             .build(ui, || {
@@ -329,6 +361,19 @@ fn main() {
                     mouse_pos[0], mouse_pos[1]
                 ));
                 ui.text(format!("FPS {}", recent_frame_times.len()));
+                if ui.small_button(im_str!("togle color picker")) {
+                    color_picker_visible = !color_picker_visible;
+                }
+                ui.text(format!(
+                    "color = ({}, {}, {})",
+                    color[0], color[1], color[2]
+                ));
             });
+        if color_picker_visible {
+            let editable_color: EditableColor = (&mut color).into();
+            let cp = ColorPicker::new(im_str!("color_picker"), editable_color);
+            cp.build(&ui);
+        }
+        color.clone()
     });
 }
