@@ -3,6 +3,8 @@ mod scene_renderer;
 use imgui::*;
 use std::time::{Duration, Instant};
 
+use scene_renderer::State as SceneState;
+
 mod support {
     use imgui::{Context, FontConfig, FontGlyphRanges, FontSource, Ui};
     use imgui_winit_support::{HiDpiMode, WinitPlatform};
@@ -30,7 +32,7 @@ mod support {
 
     use imgui_vulkano_renderer::Renderer as UiRenderer;
 
-    use super::scene_renderer::Renderer as SceneRenderer;
+    use super::scene_renderer::{Renderer as SceneRenderer, State as SceneState};
 
     mod clipboard {
         use clipboard::{ClipboardContext, ClipboardProvider};
@@ -52,6 +54,10 @@ mod support {
                 let _ = self.0.set_contents(text.to_str().to_owned());
             }
         }
+    }
+
+    pub trait AppStateT: Default {
+        fn get_scene_state(&self) -> SceneState;
     }
 
     pub struct System {
@@ -199,7 +205,10 @@ mod support {
     }
 
     impl System {
-        pub fn main_loop<F: FnMut(&mut bool, &mut Ui) -> [f32; 3] + 'static>(self, mut run_ui: F) {
+        pub fn main_loop<F: 'static + FnMut(&mut bool, &mut Ui, T) -> T, T: 'static + AppStateT>(
+            self,
+            mut run_ui: F,
+        ) {
             let System {
                 event_loop,
                 device,
@@ -217,6 +226,8 @@ mod support {
             let mut recreate_swapchain = false;
 
             let mut previous_frame_end = Some(sync::now(device.clone()).boxed());
+
+            let mut prev_app_state: Option<T> = Some(Default::default());
 
             event_loop.run(move |event, _, control_flow| match event {
                 Event::NewEvents(_) => {
@@ -249,7 +260,7 @@ mod support {
                     let mut ui = imgui.frame();
 
                     let mut run = true;
-                    let color = run_ui(&mut run, &mut ui);
+                    let app_state = run_ui(&mut run, &mut ui, prev_app_state.take().unwrap());
                     if !run {
                         *control_flow = ControlFlow::Exit;
                     }
@@ -299,7 +310,7 @@ mod support {
                     scene_renderer.draw_commands(
                         &mut scene_cmd_buf_builder,
                         images[image_num].clone(),
-                        &color,
+                        &app_state.get_scene_state(),
                     );
                     let scene_cmd_buf = scene_cmd_buf_builder.build().unwrap();
 
@@ -327,6 +338,7 @@ mod support {
                             previous_frame_end = Some(sync::now(device.clone()).boxed());
                         }
                     }
+                    prev_app_state.replace(app_state);
                 }
                 Event::WindowEvent {
                     event: WindowEvent::CloseRequested,
@@ -340,17 +352,38 @@ mod support {
     }
 }
 
+struct AppState {
+    color_picker_visible: bool,
+    color: [f32; 3],
+    recent_frame_times: Vec<Instant>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        AppState {
+            color_picker_visible: false,
+            color: [1.0, 0.0, 0.0],
+            recent_frame_times: vec![],
+        }
+    }
+}
+
+impl support::AppStateT for AppState {
+    fn get_scene_state(&self) -> SceneState {
+        SceneState {
+            color: self.color.clone(),
+        }
+    }
+}
+
 fn main() {
     let system = support::init(file!());
 
-    let mut recent_frame_times = vec![];
-    let mut color: [f32; 3] = [0.0, 0.0, 0.0];
-    let mut color_picker_visible = false;
-
-    system.main_loop(move |_, ui| {
+    system.main_loop(move |_, ui, mut app_state: AppState| {
         let now = Instant::now();
-        recent_frame_times.push(now);
-        recent_frame_times
+        app_state.recent_frame_times.push(now);
+        app_state
+            .recent_frame_times
             .retain(|frame_time| now.duration_since(*frame_time) < Duration::from_secs(1));
         Window::new(im_str!("Hello world"))
             .size([300.0, 110.0], Condition::FirstUseEver)
@@ -360,20 +393,20 @@ fn main() {
                     "Mouse Position: ({:.1},{:.1})",
                     mouse_pos[0], mouse_pos[1]
                 ));
-                ui.text(format!("FPS {}", recent_frame_times.len()));
+                ui.text(format!("FPS {}", app_state.recent_frame_times.len()));
                 if ui.small_button(im_str!("togle color picker")) {
-                    color_picker_visible = !color_picker_visible;
+                    app_state.color_picker_visible = !app_state.color_picker_visible;
                 }
                 ui.text(format!(
                     "color = ({}, {}, {})",
-                    color[0], color[1], color[2]
+                    app_state.color[0], app_state.color[1], app_state.color[2]
                 ));
             });
-        if color_picker_visible {
-            let editable_color: EditableColor = (&mut color).into();
+        if app_state.color_picker_visible {
+            let editable_color: EditableColor = (&mut app_state.color).into();
             let cp = ColorPicker::new(im_str!("color_picker"), editable_color);
             cp.build(&ui);
         }
-        color.clone()
+        app_state
     });
 }

@@ -32,6 +32,10 @@ struct Uniform {
     color: [f32; 4],
 }
 
+pub struct State {
+    pub color: [f32; 3],
+}
+
 pub struct Renderer {
     render_pass: Arc<dyn RenderPassAbstract + Send + Sync>,
     pipeline: Arc<dyn GraphicsPipelineAbstract + Send + Sync>,
@@ -142,7 +146,7 @@ impl Renderer {
         &self,
         cmd_buf_builder: &mut AutoCommandBufferBuilder<P>,
         image: Arc<impl ImageViewAccess + Send + Sync + 'static>,
-        color: &[f32; 3],
+        state: &State,
     ) {
         let framebuffer = Arc::new(
             Framebuffer::start(self.render_pass.clone())
@@ -155,7 +159,7 @@ impl Renderer {
             .update_buffer(
                 self.uniform_buffer.clone(),
                 Uniform {
-                    color: [color[0], color[1], color[2], 1.0],
+                    color: [state.color[0], state.color[1], state.color[2], 1.0],
                 },
             )
             .unwrap()
