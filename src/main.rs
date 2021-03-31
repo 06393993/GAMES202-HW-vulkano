@@ -1,9 +1,19 @@
+#![recursion_limit = "1024"]
+
 mod scene_renderer;
 
 use imgui::*;
 use std::time::{Duration, Instant};
+#[macro_use]
+extern crate error_chain;
 
 use scene_renderer::State as SceneState;
+
+mod errors {
+    error_chain! {}
+}
+
+use errors::*;
 
 mod support {
     use imgui::{Context, FontConfig, FontGlyphRanges, FontSource, Ui};
@@ -377,6 +387,22 @@ impl support::AppStateT for AppState {
 }
 
 fn main() {
+    if let Err(ref e) = run() {
+        eprintln!("error: {}", e);
+
+        for e in e.iter().skip(1) {
+            eprintln!("caused by: {}", e);
+        }
+
+        if let Some(backtrace) = e.backtrace() {
+            eprintln!("backtrace: {:?}", backtrace);
+        }
+
+        ::std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
     let system = support::init(file!());
 
     system.main_loop(move |_, ui, mut app_state: AppState| {
@@ -409,4 +435,5 @@ fn main() {
         }
         app_state
     });
+    Ok(())
 }
