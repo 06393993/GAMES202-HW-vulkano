@@ -1,3 +1,4 @@
+mod camera;
 mod shaders;
 
 use std::sync::Arc;
@@ -19,6 +20,10 @@ use vulkano::{
     },
     sync::GpuFuture,
 };
+
+struct NDCSpace;
+struct ViewSpace;
+struct WorldSpace;
 
 #[derive(Default, Copy, Clone)]
 struct Vertex {
