@@ -39,7 +39,7 @@ mod support {
     use winit::event_loop::{ControlFlow, EventLoop};
     use winit::window::{Window, WindowBuilder};
 
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use imgui_vulkano_renderer::Renderer as UiRenderer;
 
@@ -244,6 +244,7 @@ mod support {
 
             let mut prev_app_state: Option<T> = Some(Default::default());
 
+            let res = Arc::new(Mutex::new(Ok(())));
             event_loop.run(move |event, _, control_flow| match event {
                 Event::NewEvents(_) => {
                     // imgui.io_mut().update_delta_time(Instant::now());
@@ -280,8 +281,8 @@ mod support {
                         Ok(app_state) => app_state,
                         Err(e) => {
                             *control_flow = ControlFlow::Exit;
-                            // TODO: remove this panic once we move the error handling from main()
-                            panic!("{:?}", e);
+                            *res.lock().unwrap() = Err(e);
+                            return;
                         }
                     };
                     if !run {
@@ -367,6 +368,25 @@ mod support {
                     event: WindowEvent::CloseRequested,
                     ..
                 } => *control_flow = ControlFlow::Exit,
+                Event::LoopDestroyed => {
+                    let exit_code = if let Err(ref e) = *res.lock().unwrap() {
+                        eprintln!("error: {}", e);
+
+                        for e in e.iter().skip(1) {
+                            eprintln!("caused by: {}", e);
+                        }
+
+                        if let Some(backtrace) = e.backtrace() {
+                            eprintln!("backtrace: {:?}", backtrace);
+                        }
+                        1
+                    } else {
+                        0
+                    };
+
+                    platform.handle_event(imgui.io_mut(), surface.window(), &event);
+                    ::std::process::exit(exit_code);
+                }
                 event => {
                     platform.handle_event(imgui.io_mut(), surface.window(), &event);
                 }
@@ -405,23 +425,10 @@ impl support::AppStateT for AppState {
 }
 
 fn main() {
-    // TODO: move these to the exit handler of main_loop
-    if let Err(ref e) = run() {
-        eprintln!("error: {}", e);
-
-        for e in e.iter().skip(1) {
-            eprintln!("caused by: {}", e);
-        }
-
-        if let Some(backtrace) = e.backtrace() {
-            eprintln!("backtrace: {:?}", backtrace);
-        }
-
-        ::std::process::exit(1);
-    }
+    run()
 }
 
-fn run() -> Result<()> {
+fn run() -> ! {
     let system = support::init(file!());
 
     system.main_loop(move |_, ui, mut app_state: AppState| {
