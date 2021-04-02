@@ -21,9 +21,11 @@ use vulkano::{
     sync::GpuFuture,
 };
 
-struct NDCSpace;
-struct ViewSpace;
-struct WorldSpace;
+pub use camera::Camera;
+
+pub struct NDCSpace;
+pub struct ViewSpace;
+pub struct WorldSpace;
 
 #[derive(Default, Copy, Clone)]
 struct Vertex {
@@ -32,13 +34,18 @@ struct Vertex {
 
 vulkano::impl_vertex!(Vertex, position);
 
+// Uniform object may not be read from the CPU
+#[allow(dead_code)]
 #[derive(Default, Copy, Clone)]
 struct Uniform {
+    view: [f32; 16],
+    proj: [f32; 16],
     color: [f32; 4],
 }
 
 pub struct State {
     pub color: [f32; 3],
+    pub camera: Camera,
 }
 
 pub struct Renderer {
@@ -164,6 +171,8 @@ impl Renderer {
             .update_buffer(
                 self.uniform_buffer.clone(),
                 Uniform {
+                    view: state.camera.get_view_transform().to_array(),
+                    proj: state.camera.get_projection_transform().to_array(),
                     color: [state.color[0], state.color[1], state.color[2], 1.0],
                 },
             )

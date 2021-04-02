@@ -2,12 +2,13 @@
 
 mod scene_renderer;
 
+use euclid::{approxeq::ApproxEq, point3, vec3, Angle, Point3D};
 use imgui::*;
 use std::time::{Duration, Instant};
 #[macro_use]
 extern crate error_chain;
 
-use scene_renderer::State as SceneState;
+use scene_renderer::{Camera, State as SceneState};
 
 mod errors {
     error_chain! {}
@@ -43,6 +44,7 @@ mod support {
     use imgui_vulkano_renderer::Renderer as UiRenderer;
 
     use super::scene_renderer::{Renderer as SceneRenderer, State as SceneState};
+    use crate::errors::*;
 
     mod clipboard {
         use clipboard::{ClipboardContext, ClipboardProvider};
@@ -215,10 +217,13 @@ mod support {
     }
 
     impl System {
-        pub fn main_loop<F: 'static + FnMut(&mut bool, &mut Ui, T) -> T, T: 'static + AppStateT>(
+        pub fn main_loop<
+            F: 'static + FnMut(&mut bool, &mut Ui, T) -> Result<T>,
+            T: 'static + AppStateT,
+        >(
             self,
             mut run_ui: F,
-        ) {
+        ) -> ! {
             let System {
                 event_loop,
                 device,
@@ -270,7 +275,15 @@ mod support {
                     let mut ui = imgui.frame();
 
                     let mut run = true;
-                    let app_state = run_ui(&mut run, &mut ui, prev_app_state.take().unwrap());
+                    let app_state = match run_ui(&mut run, &mut ui, prev_app_state.take().unwrap())
+                    {
+                        Ok(app_state) => app_state,
+                        Err(e) => {
+                            *control_flow = ControlFlow::Exit;
+                            // TODO: remove this panic once we move the error handling from main()
+                            panic!("{:?}", e);
+                        }
+                    };
                     if !run {
                         *control_flow = ControlFlow::Exit;
                     }
@@ -366,6 +379,8 @@ struct AppState {
     color_picker_visible: bool,
     color: [f32; 3],
     recent_frame_times: Vec<Instant>,
+    time_start: Instant,
+    camera: Option<Camera>,
 }
 
 impl Default for AppState {
@@ -374,6 +389,8 @@ impl Default for AppState {
             color_picker_visible: false,
             color: [1.0, 0.0, 0.0],
             recent_frame_times: vec![],
+            time_start: Instant::now(),
+            camera: None,
         }
     }
 }
@@ -382,11 +399,13 @@ impl support::AppStateT for AppState {
     fn get_scene_state(&self) -> SceneState {
         SceneState {
             color: self.color.clone(),
+            camera: self.camera.as_ref().unwrap().clone(),
         }
     }
 }
 
 fn main() {
+    // TODO: move these to the exit handler of main_loop
     if let Err(ref e) = run() {
         eprintln!("error: {}", e);
 
@@ -433,7 +452,36 @@ fn run() -> Result<()> {
             let cp = ColorPicker::new(im_str!("color_picker"), editable_color);
             cp.build(&ui);
         }
-        app_state
+
+        let aspect_ratio = (ui.io().display_size[0] as f32) / (ui.io().display_size[1] as f32);
+        let time_elapsed = app_state.time_start.elapsed();
+        let position = point3(
+            3.0 * time_elapsed.as_secs_f32().sin(),
+            0.0,
+            3.0 * time_elapsed.as_secs_f32().cos(),
+        );
+        match app_state.camera {
+            Some(ref mut camera) if camera.get_aspect_ratio().approx_eq(&aspect_ratio) => {
+                camera.set_position(&position);
+                camera
+                    .look_at(&Point3D::origin())
+                    .chain_err(|| "fail to set the camera look at target")?;
+            }
+            _ => {
+                app_state.camera.replace(
+                    Camera::new(
+                        Angle::pi() / 4.0,
+                        aspect_ratio,
+                        0.1,
+                        10.0,
+                        &position,
+                        &Point3D::origin(),
+                        &vec3(0.0, 1.0, 0.0),
+                    )
+                    .chain_err(|| "fail to create camera in main loop")?,
+                );
+            }
+        }
+        Ok(app_state)
     });
-    Ok(())
 }

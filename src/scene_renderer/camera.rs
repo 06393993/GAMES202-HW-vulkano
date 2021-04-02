@@ -1,9 +1,10 @@
-use euclid::{approxeq::ApproxEq, point3, Angle, Point3D, Transform3D, Vector3D};
+use euclid::{approxeq::ApproxEq, Angle, Point3D, Transform3D, Vector3D};
 
 use super::{NDCSpace, ViewSpace, WorldSpace};
 use crate::errors::*;
 
-pub(super) struct Camera {
+#[derive(Clone)]
+pub struct Camera {
     projection_transform: Transform3D<f32, ViewSpace, NDCSpace>,
     position: Point3D<f32, WorldSpace>,
     // a normalized vector from the camera position to the look at target
@@ -21,8 +22,8 @@ impl Camera {
         look_at: &Point3D<f32, WorldSpace>,
         up: &Vector3D<f32, WorldSpace>,
     ) -> Result<Self> {
-        if (fov.radians < Angle::approx_epsilon()
-            || fov.radians > Angle::<f32>::pi().radians - Angle::<f32>::approx_epsilon())
+        if fov.radians < Angle::approx_epsilon()
+            || fov.radians > Angle::<f32>::pi().radians - Angle::<f32>::approx_epsilon()
         {
             return Err(
                 format!("fov = {}, is not within the range of 0 and pi", fov.radians).into(),
@@ -68,21 +69,16 @@ impl Camera {
             .into());
         }
 
-        let r = near / (fov / 2.0).radians.tan();
-        let l = -r;
-        let t = r / aspect_ratio;
+        let t = near * (fov / 2.0).radians.tan();
         let b = -t;
+        let r = t * aspect_ratio;
+        let l = -r;
 
         let projection_transform = Transform3D::from_arrays([
             [2.0 * near / (r - l), 0.0, (r + l) / (r - l), 0.0],
-            [0.0, 2.0 * near / (t - b), (t + b) / (t - b), 0.0],
-            [
-                0.0,
-                0.0,
-                -(far + near) / (far - near),
-                -2.0 * far * near / (far - near),
-            ],
-            [0.0, 0.0, -1.0, 0.0],
+            [0.0, -2.0 * near / (t - b), (t + b) / (t - b), 0.0],
+            [0.0, 0.0, -far / (far - near), -1.0],
+            [0.0, 0.0, -far * near / (far - near), 0.0],
         ]);
         Ok(Camera {
             projection_transform,
@@ -118,28 +114,29 @@ impl Camera {
 
     pub fn get_view_transform(&self) -> Transform3D<f32, WorldSpace, ViewSpace> {
         // Schmidt orthogonalization
-        let view_y = (self.up - self.direction * self.direction.dot(self.up)).normalize();
-        let view_x = view_y.cross(self.direction).normalize();
+        let view_z = -self.direction;
+        let view_y = (self.up - view_z * view_z.dot(self.up)).normalize();
+        let view_x = view_y.cross(view_z).normalize();
         Transform3D::from_arrays([
-            [view_x.x, view_y.x, self.direction.x, 0.0],
-            [view_x.y, view_y.y, self.direction.y, 0.0],
-            [view_x.z, view_y.z, self.direction.z, 0.0],
+            [view_x.x, view_y.x, view_z.x, 0.0],
+            [view_x.y, view_y.y, view_z.y, 0.0],
+            [view_x.z, view_y.z, view_z.z, 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ])
         .pre_translate(-self.position.to_vector())
     }
 
-    fn get_position(&self) -> Point3D<f32, WorldSpace> {
+    pub fn get_position(&self) -> Point3D<f32, WorldSpace> {
         self.position
     }
 
-    fn get_direction(&self) -> Vector3D<f32, WorldSpace> {
+    pub fn get_direction(&self) -> Vector3D<f32, WorldSpace> {
         self.direction
     }
 
-    fn get_aspect_ratio(&self) -> f32 {
+    pub fn get_aspect_ratio(&self) -> f32 {
         let proj = self.get_projection_transform();
-        proj.m22 / proj.m11
+        -proj.m22 / proj.m11
     }
 }
 
@@ -150,24 +147,35 @@ mod tests {
 
     #[test]
     fn test_projection_transform() {
+        let near = 1.0;
+        let far = 5.0;
         let camera = Camera::new(
             Angle::pi() / 3.0,
             2.0,
-            1.0,
-            5.0,
+            near,
+            far,
             &point3(1.0, 0.0, 1.0),
             &Point3D::origin(),
             &vec3(0.0, 1.0, 0.0),
         )
         .unwrap();
-        camera
-            .get_projection_transform()
-            .approx_eq(&Transform3D::from_arrays([
-                [1.0 / 3.0_f32.sqrt(), 0.0, 0.0, 0.0],
-                [0.0, 2.0 / 3.0_f32.sqrt(), 0.0, 0.0],
-                [0.0, 0.0, -3.0 / 2.0, -5.0 / 2.0],
-                [0.0, 0.0, -1.0, 0.0],
-            ]));
+        let projection_transform = camera.get_projection_transform();
+        assert!(projection_transform
+            .transform_point3d_homogeneous(point3(0.0, 0.0, -near))
+            .to_point3d()
+            .unwrap()
+            .approx_eq(&point3(0.0, 0.0, 0.0)));
+        assert!(projection_transform
+            .transform_point3d_homogeneous(point3(0.0, 0.0, -far))
+            .to_point3d()
+            .unwrap()
+            .approx_eq(&point3(0.0, 0.0, 1.0)));
+        assert!(projection_transform.approx_eq(&Transform3D::from_arrays([
+            [3.0_f32.sqrt() / 2.0, 0.0, 0.0, 0.0],
+            [0.0, -3.0_f32.sqrt(), 0.0, 0.0],
+            [0.0, 0.0, -5.0 / 4.0, -1.0],
+            [0.0, 0.0, -5.0 / 4.0, 0.0],
+        ])));
     }
 
     #[test]
@@ -311,7 +319,7 @@ mod tests {
             .transform_vector3d(vec3(0.0, 0.0, 1.0));
         assert!(
             view_x.dot(direction).approx_eq(&0.0),
-            "the x axis in view space should be perpendicular to the direction vector"
+            "the x axis in view space should be perpendicular to the direction vector, dot product = {}", view_x.dot(direction)
         );
         assert!(
             view_x.dot(up).approx_eq(&0.0),
@@ -322,8 +330,8 @@ mod tests {
             "the x axis in view space should share the same scale with the world space"
         );
         assert!(
-            view_z.angle_to(direction).approx_eq(&Angle::zero()),
-            "the z axis in view space should be colinear to the direction vector"
+            view_z.angle_to(direction).approx_eq(&Angle::pi()),
+            "the z axis in view space should be inverse to the direction vector"
         );
         assert!(
             view_z.length().approx_eq(&1.0),
