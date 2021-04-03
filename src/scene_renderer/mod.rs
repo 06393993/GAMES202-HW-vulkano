@@ -3,6 +3,7 @@ mod shaders;
 
 use std::sync::Arc;
 
+use euclid::Transform3D;
 use vulkano::{
     buffer::{
         device_local::DeviceLocalBuffer, immutable::ImmutableBuffer, BufferAccess, BufferUsage,
@@ -26,6 +27,7 @@ pub use camera::{Camera, CameraControl, Direction as CameraDirection};
 pub struct NDCSpace;
 pub struct ViewSpace;
 pub struct WorldSpace;
+pub struct TriangleSpace;
 
 #[derive(Default, Copy, Clone)]
 struct Vertex {
@@ -38,6 +40,7 @@ vulkano::impl_vertex!(Vertex, position);
 #[allow(dead_code)]
 #[derive(Default, Copy, Clone)]
 struct Uniform {
+    model: [f32; 16],
     view: [f32; 16],
     proj: [f32; 16],
     color: [f32; 4],
@@ -46,6 +49,7 @@ struct Uniform {
 pub struct State {
     pub color: [f32; 3],
     pub camera: Camera,
+    pub model_transform: Transform3D<f32, TriangleSpace, WorldSpace>,
 }
 
 pub struct Renderer {
@@ -171,6 +175,7 @@ impl Renderer {
             .update_buffer(
                 self.uniform_buffer.clone(),
                 Uniform {
+                    model: state.model_transform.to_array(),
                     view: state.camera.get_view_transform().to_array(),
                     proj: state.camera.get_projection_transform().to_array(),
                     color: [state.color[0], state.color[1], state.color[2], 1.0],

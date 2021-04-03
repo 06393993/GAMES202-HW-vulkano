@@ -158,7 +158,7 @@ pub trait CameraControl {
 
     fn move_camera(&mut self, direction: Direction, time_elapsed: Duration) {
         let speed = self.get_speed();
-        let mut camera = self.get_camera_mut();
+        let camera = self.get_camera_mut();
         let pos = camera.get_position();
         let sign = match direction {
             Direction::Backward | Direction::Up | Direction::Right => 1.0,

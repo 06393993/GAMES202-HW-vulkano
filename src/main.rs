@@ -4,13 +4,15 @@ mod scene_renderer;
 
 use std::time::{Duration, Instant};
 
-use euclid::{approxeq::ApproxEq, point3, vec3, Angle, Point3D};
+use euclid::{approxeq::ApproxEq, point3, vec3, Angle, Point3D, Transform3D};
 use imgui::*;
 use winit::event::VirtualKeyCode;
 #[macro_use]
 extern crate error_chain;
 
-use scene_renderer::{Camera, CameraControl, CameraDirection, State as SceneState};
+use scene_renderer::{
+    Camera, CameraControl, CameraDirection, State as SceneState, TriangleSpace, WorldSpace,
+};
 
 mod errors {
     error_chain! {}
@@ -404,6 +406,7 @@ struct AppState {
     time_start: Instant,
     camera: Option<Camera>,
     camera_speed: f32,
+    triangle_transform: Transform3D<f32, TriangleSpace, WorldSpace>,
 }
 
 impl Default for AppState {
@@ -415,6 +418,7 @@ impl Default for AppState {
             time_start: Instant::now(),
             camera: None,
             camera_speed: 0.05,
+            triangle_transform: Transform3D::identity(),
         }
     }
 }
@@ -424,6 +428,7 @@ impl support::AppStateT for AppState {
         SceneState {
             color: self.color.clone(),
             camera: self.camera.as_ref().unwrap().clone(),
+            model_transform: self.triangle_transform,
         }
     }
 }
@@ -441,20 +446,37 @@ impl CameraControl for AppState {
 impl AppState {
     fn update_camera(&mut self, ui: &mut imgui::Ui) -> Result<()> {
         let aspect_ratio = (ui.io().display_size[0] as f32) / (ui.io().display_size[1] as f32);
-        if self.camera.is_none() {
-            self.camera.replace(
+        let fov = Angle::pi() / 4.0;
+        let near = 0.1;
+        let far = 10.0;
+        let up = vec3(0.0, 1.0, 0.0);
+        let camera = match self.camera.take() {
+            Some(camera) if !camera.get_aspect_ratio().approx_eq(&aspect_ratio) => {
+                let position = camera.get_position();
                 Camera::new(
-                    Angle::pi() / 4.0,
+                    fov,
                     aspect_ratio,
-                    0.1,
-                    10.0,
-                    &point3(2.0, 2.0, 2.0),
-                    &Point3D::origin(),
-                    &vec3(0.0, 1.0, 0.0),
+                    near,
+                    far,
+                    &position,
+                    &(position + camera.get_direction()),
+                    &up,
                 )
-                .chain_err(|| "fail to create camera for app state")?,
-            );
-        }
+                .chain_err(|| "fail to re-create camera for app state when aspect ratio changes")?
+            }
+            Some(camera) => camera,
+            None => Camera::new(
+                fov,
+                aspect_ratio,
+                near,
+                far,
+                &point3(2.0, 2.0, 2.0),
+                &Point3D::origin(),
+                &vec3(0.0, 1.0, 0.0),
+            )
+            .chain_err(|| "fail to initialize camera for app state")?,
+        };
+        self.camera.replace(camera);
         let key2direction = {
             use CameraDirection::*;
             use VirtualKeyCode::{A, D, S, W, X, Z};
@@ -473,6 +495,13 @@ impl AppState {
             }
         }
         Ok(())
+    }
+
+    fn update_scene(&mut self, delta_time: Duration) {
+        let speed = Angle::pi() / 20.0;
+        self.triangle_transform =
+            self.triangle_transform
+                .then_rotate(0.0, 1.0, 0.0, speed * delta_time.as_secs_f32());
     }
 }
 
@@ -513,6 +542,7 @@ fn run() -> ! {
         }
 
         app_state.update_camera(ui)?;
+        app_state.update_scene(Duration::from_secs_f32(ui.io().delta_time));
         Ok(app_state)
     });
 }
