@@ -21,7 +21,7 @@ use vulkano::{
     sync::GpuFuture,
 };
 
-pub use camera::Camera;
+pub use camera::{Camera, CameraControl, Direction as CameraDirection};
 
 pub struct NDCSpace;
 pub struct ViewSpace;

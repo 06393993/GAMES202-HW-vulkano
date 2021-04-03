@@ -2,13 +2,15 @@
 
 mod scene_renderer;
 
+use std::time::{Duration, Instant};
+
 use euclid::{approxeq::ApproxEq, point3, vec3, Angle, Point3D};
 use imgui::*;
-use std::time::{Duration, Instant};
+use winit::event::VirtualKeyCode;
 #[macro_use]
 extern crate error_chain;
 
-use scene_renderer::{Camera, State as SceneState};
+use scene_renderer::{Camera, CameraControl, CameraDirection, State as SceneState};
 
 mod errors {
     error_chain! {}
@@ -401,6 +403,7 @@ struct AppState {
     recent_frame_times: Vec<Instant>,
     time_start: Instant,
     camera: Option<Camera>,
+    camera_speed: f32,
 }
 
 impl Default for AppState {
@@ -411,6 +414,7 @@ impl Default for AppState {
             recent_frame_times: vec![],
             time_start: Instant::now(),
             camera: None,
+            camera_speed: 0.05,
         }
     }
 }
@@ -421,6 +425,54 @@ impl support::AppStateT for AppState {
             color: self.color.clone(),
             camera: self.camera.as_ref().unwrap().clone(),
         }
+    }
+}
+
+impl CameraControl for AppState {
+    fn get_camera_mut(&mut self) -> &mut Camera {
+        self.camera.as_mut().unwrap()
+    }
+
+    fn get_speed(&self) -> f32 {
+        self.camera_speed
+    }
+}
+
+impl AppState {
+    fn update_camera(&mut self, ui: &mut imgui::Ui) -> Result<()> {
+        let aspect_ratio = (ui.io().display_size[0] as f32) / (ui.io().display_size[1] as f32);
+        if self.camera.is_none() {
+            self.camera.replace(
+                Camera::new(
+                    Angle::pi() / 4.0,
+                    aspect_ratio,
+                    0.1,
+                    10.0,
+                    &point3(2.0, 2.0, 2.0),
+                    &Point3D::origin(),
+                    &vec3(0.0, 1.0, 0.0),
+                )
+                .chain_err(|| "fail to create camera for app state")?,
+            );
+        }
+        let key2direction = {
+            use CameraDirection::*;
+            use VirtualKeyCode::{A, D, S, W, X, Z};
+            vec![
+                (W, Forward),
+                (S, Backward),
+                (A, Left),
+                (D, Right),
+                (Z, Up),
+                (X, Down),
+            ]
+        };
+        for (key, direction) in key2direction.into_iter() {
+            if ui.io().keys_down[key as usize] {
+                self.move_camera(direction, Duration::from_secs_f32(ui.io().delta_time));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -460,35 +512,7 @@ fn run() -> ! {
             cp.build(&ui);
         }
 
-        let aspect_ratio = (ui.io().display_size[0] as f32) / (ui.io().display_size[1] as f32);
-        let time_elapsed = app_state.time_start.elapsed();
-        let position = point3(
-            3.0 * time_elapsed.as_secs_f32().sin(),
-            0.0,
-            3.0 * time_elapsed.as_secs_f32().cos(),
-        );
-        match app_state.camera {
-            Some(ref mut camera) if camera.get_aspect_ratio().approx_eq(&aspect_ratio) => {
-                camera.set_position(&position);
-                camera
-                    .look_at(&Point3D::origin())
-                    .chain_err(|| "fail to set the camera look at target")?;
-            }
-            _ => {
-                app_state.camera.replace(
-                    Camera::new(
-                        Angle::pi() / 4.0,
-                        aspect_ratio,
-                        0.1,
-                        10.0,
-                        &position,
-                        &Point3D::origin(),
-                        &vec3(0.0, 1.0, 0.0),
-                    )
-                    .chain_err(|| "fail to create camera in main loop")?,
-                );
-            }
-        }
+        app_state.update_camera(ui)?;
         Ok(app_state)
     });
 }

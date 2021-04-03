@@ -1,4 +1,6 @@
-use euclid::{approxeq::ApproxEq, Angle, Point3D, Transform3D, Vector3D};
+use std::time::Duration;
+
+use euclid::{approxeq::ApproxEq, vec3, Angle, Point3D, Transform3D, Vector3D};
 
 use super::{NDCSpace, ViewSpace, WorldSpace};
 use crate::errors::*;
@@ -137,6 +139,40 @@ impl Camera {
     pub fn get_aspect_ratio(&self) -> f32 {
         let proj = self.get_projection_transform();
         -proj.m22 / proj.m11
+    }
+}
+
+pub enum Direction {
+    Up,
+    Down,
+    Left,
+    Right,
+    Forward,
+    Backward,
+}
+
+pub trait CameraControl {
+    fn get_camera_mut(&mut self) -> &mut Camera;
+    // unit per second
+    fn get_speed(&self) -> f32;
+
+    fn move_camera(&mut self, direction: Direction, time_elapsed: Duration) {
+        let speed = self.get_speed();
+        let mut camera = self.get_camera_mut();
+        let pos = camera.get_position();
+        let sign = match direction {
+            Direction::Backward | Direction::Up | Direction::Right => 1.0,
+            Direction::Forward | Direction::Down | Direction::Left => -1.0,
+        };
+        let view_transform_inverse = camera.get_view_transform().inverse().unwrap();
+        let direction = match direction {
+            Direction::Backward | Direction::Forward => vec3(0.0, 0.0, 1.0),
+            Direction::Left | Direction::Right => vec3(1.0, 0.0, 0.0),
+            Direction::Up | Direction::Down => vec3(0.0, 1.0, 0.0),
+        };
+        let direction = view_transform_inverse.transform_vector3d(direction) * sign;
+        let dist = speed * time_elapsed.as_secs_f32();
+        camera.set_position(&(pos + direction * dist));
     }
 }
 
