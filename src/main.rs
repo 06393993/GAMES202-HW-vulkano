@@ -509,6 +509,31 @@ impl AppState {
             self.triangle_transform
                 .then_rotate(0.0, 1.0, 0.0, speed * delta_time.as_secs_f32());
     }
+
+    fn update_ui(&mut self, ui: &mut Ui) {
+        Window::new(im_str!("Hello world"))
+            .size([300.0, 110.0], Condition::FirstUseEver)
+            .build(ui, || {
+                let mouse_pos = ui.io().mouse_pos;
+                ui.text(format!(
+                    "Mouse Position: ({:.1},{:.1})",
+                    mouse_pos[0], mouse_pos[1]
+                ));
+                ui.text(format!("FPS {}", self.recent_frame_times.len()));
+                if ui.small_button(im_str!("togle color picker")) {
+                    self.color_picker_visible = !self.color_picker_visible;
+                }
+                ui.text(format!(
+                    "color = ({}, {}, {})",
+                    self.color[0], self.color[1], self.color[2]
+                ));
+            });
+        if self.color_picker_visible {
+            let editable_color: EditableColor = (&mut self.color).into();
+            let cp = ColorPicker::new(im_str!("color_picker"), editable_color);
+            cp.build(&ui);
+        }
+    }
 }
 
 fn main() {
@@ -525,29 +550,7 @@ fn run() -> Result<()> {
         app_state
             .recent_frame_times
             .retain(|frame_time| now.duration_since(*frame_time) < Duration::from_secs(1));
-        Window::new(im_str!("Hello world"))
-            .size([300.0, 110.0], Condition::FirstUseEver)
-            .build(ui, || {
-                let mouse_pos = ui.io().mouse_pos;
-                ui.text(format!(
-                    "Mouse Position: ({:.1},{:.1})",
-                    mouse_pos[0], mouse_pos[1]
-                ));
-                ui.text(format!("FPS {}", app_state.recent_frame_times.len()));
-                if ui.small_button(im_str!("togle color picker")) {
-                    app_state.color_picker_visible = !app_state.color_picker_visible;
-                }
-                ui.text(format!(
-                    "color = ({}, {}, {})",
-                    app_state.color[0], app_state.color[1], app_state.color[2]
-                ));
-            });
-        if app_state.color_picker_visible {
-            let editable_color: EditableColor = (&mut app_state.color).into();
-            let cp = ColorPicker::new(im_str!("color_picker"), editable_color);
-            cp.build(&ui);
-        }
-
+        app_state.update_ui(ui);
         app_state
             .update_camera(ui)
             .chain_err(|| "fail to update camera in main loop")?;
