@@ -5,14 +5,21 @@
 
 use std::sync::Arc;
 
+use vulkano::{
+    buffer::{device_local::DeviceLocalBuffer, BufferUsage},
+    command_buffer::AutoCommandBufferBuilder,
+    device::{Device, Queue},
+};
+
 use super::{
-    material::{Material, UniformT},
+    material::{DescriptorSetBinding, DescriptorSetBindingDesc, Material, UniformsT},
     renderer::{Mesh, MeshData, MeshRenderer, SimpleVertex},
     shaders::light::Shaders as EmissiveShaders,
 };
 use crate::errors::*;
 
 #[allow(dead_code)]
+#[derive(Clone)]
 pub struct EmissiveUniform {
     model: [f32; 16],
     view: [f32; 16],
@@ -21,17 +28,36 @@ pub struct EmissiveUniform {
     light_color: [f32; 4],
 }
 
-impl UniformT for EmissiveUniform {
-    fn update_model_matrix(&mut self, mat: [f32; 16]) {
-        self.model.copy_from_slice(&mat);
+pub struct EmissiveUniforms {
+    uniform: EmissiveUniform,
+    buffer: Arc<DeviceLocalBuffer<EmissiveUniform>>,
+}
+
+impl UniformsT for EmissiveUniforms {
+    fn set_model_matrix(&mut self, mat: [f32; 16]) {
+        self.uniform.model.copy_from_slice(&mat);
     }
 
-    fn update_view_matrix(&mut self, mat: [f32; 16]) {
-        self.view.copy_from_slice(&mat);
+    fn set_view_matrix(&mut self, mat: [f32; 16]) {
+        self.uniform.view.copy_from_slice(&mat);
     }
 
-    fn update_proj_matrix(&mut self, mat: [f32; 16]) {
-        self.proj.copy_from_slice(&mat);
+    fn set_proj_matrix(&mut self, mat: [f32; 16]) {
+        self.uniform.proj.copy_from_slice(&mat);
+    }
+
+    fn update_buffers<P>(&self, cmd_buf_builder: &mut AutoCommandBufferBuilder<P>) -> Result<()> {
+        cmd_buf_builder
+            .update_buffer(self.buffer.clone(), self.uniform.clone())
+            .chain_err(|| "fail to issue update buffers commands to update emissive uniform")?;
+        Ok(())
+    }
+
+    fn create_descriptor_bindings(&self) -> Vec<DescriptorSetBinding> {
+        vec![DescriptorSetBinding {
+            index: 0,
+            desc: DescriptorSetBindingDesc::Buffer(self.buffer.clone()),
+        }]
     }
 }
 
@@ -50,22 +76,33 @@ impl EmissiveMaterial {
 }
 
 impl Material for EmissiveMaterial {
-    type Uniform = EmissiveUniform;
+    type Uniforms = EmissiveUniforms;
     type Shaders = EmissiveShaders;
 
-    fn create_uniform(&self) -> Self::Uniform {
-        EmissiveUniform {
-            model: Default::default(),
-            view: Default::default(),
-            proj: Default::default(),
-            light_intensity: self.light_intensity,
-            light_color: [
-                self.light_color[0],
-                self.light_color[1],
-                self.light_color[2],
-                1.0,
-            ],
-        }
+    fn create_uniforms(&self, device: Arc<Device>, queue: Arc<Queue>) -> Result<Self::Uniforms> {
+        let buffer = DeviceLocalBuffer::new(
+            device.clone(),
+            BufferUsage::uniform_buffer_transfer_destination(),
+            vec![queue.family()],
+        )
+        .chain_err(|| {
+            "fail to create device local buffer to store the uniform of the emissive material"
+        })?;
+        Ok(EmissiveUniforms {
+            uniform: EmissiveUniform {
+                model: Default::default(),
+                view: Default::default(),
+                proj: Default::default(),
+                light_intensity: self.light_intensity,
+                light_color: [
+                    self.light_color[0],
+                    self.light_color[1],
+                    self.light_color[2],
+                    1.0,
+                ],
+            },
+            buffer,
+        })
     }
 }
 
@@ -97,10 +134,10 @@ impl<S> PointLight<S> {
         light_intensity: f32,
         light_color: [f32; 3],
     ) -> Result<Self> {
-        let mesh = mesh_renderer
-            .create_mesh(MeshData::<PointLightVertex>::cube())
-            .chain_err(|| "fail to create mesh")?;
         let material = EmissiveMaterial::new(light_intensity, light_color);
+        let mesh = mesh_renderer
+            .create_mesh(MeshData::<PointLightVertex>::cube(), &material)
+            .chain_err(|| "fail to create mesh")?;
         Ok(Self { material, mesh })
     }
 }

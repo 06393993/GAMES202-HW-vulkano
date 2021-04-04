@@ -3,17 +3,18 @@
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
-use std::{marker::PhantomData, sync::Arc};
+use std::{
+    marker::PhantomData,
+    sync::{Arc, Mutex},
+};
 
 use euclid::Transform3D;
 use vulkano::{
-    buffer::{
-        device_local::DeviceLocalBuffer, immutable::ImmutableBuffer, BufferAccess, BufferUsage,
-        TypedBufferAccess,
-    },
+    buffer::{immutable::ImmutableBuffer, BufferAccess, BufferUsage},
     command_buffer::{AutoCommandBufferBuilder, DynamicState, SubpassContents},
-    descriptor::descriptor_set::{
-        DescriptorSet, PersistentDescriptorSet, UnsafeDescriptorSetLayout,
+    descriptor::{
+        descriptor_set::{DescriptorSet, PersistentDescriptorSet},
+        pipeline_layout::{PipelineLayout, PipelineLayoutAbstract},
     },
     device::{Device, Queue},
     format::{ClearValue, Format},
@@ -24,10 +25,17 @@ use vulkano::{
         viewport::{Scissor, Viewport},
         GraphicsPipeline, GraphicsPipelineAbstract,
     },
+    sampler::Sampler,
     sync::GpuFuture,
 };
 
-use super::{super::shaders::ShadersT, Camera, Material, UniformT, WorldSpace};
+use super::{
+    super::{
+        material::{DescriptorSetBinding, DescriptorSetBindingDesc},
+        shaders::ShadersT,
+    },
+    Camera, Material, UniformsT, WorldSpace,
+};
 use crate::errors::*;
 
 pub trait SimpleVertex: VertexT {
@@ -109,8 +117,8 @@ pub struct Mesh<V: VertexT, M: Material, S> {
     renderer: Arc<Renderer<V, M>>,
     vertex_buffer: Arc<dyn BufferAccess + Send + Sync>,
     index_buffer: Arc<ImmutableBuffer<[u16]>>,
-    descriptor_set: Arc<dyn DescriptorSet + Send + Sync>,
-    uniform_buffer: Arc<dyn TypedBufferAccess<Content = M::Uniform> + Send + Sync>,
+    descriptor_sets: Vec<Arc<dyn DescriptorSet + Send + Sync>>,
+    uniforms: Arc<Mutex<M::Uniforms>>,
     phantom: PhantomData<S>,
 }
 
@@ -119,17 +127,21 @@ impl<V: VertexT, M: Material, S> Mesh<V, M, S> {
         &self,
         cmd_buf_builder: &mut AutoCommandBufferBuilder<P>,
         framebuffer: Arc<dyn FramebufferAbstract + Send + Sync>,
-        mut uniform: M::Uniform,
         model_transform: &Transform3D<f32, S, WorldSpace>,
         camera: &Camera,
     ) -> Result<()> {
-        uniform.update_model_matrix(model_transform.to_array());
-        uniform.update_view_proj_matrix_from_camera(camera);
+        {
+            let mut uniforms = self
+                .uniforms
+                .lock()
+                .expect("fail to grab the lock of uniforms");
+            uniforms.set_model_matrix(model_transform.to_array());
+            uniforms.set_view_proj_matrix_from_camera(camera);
+            uniforms.update_buffers(cmd_buf_builder).chain_err(|| {
+                "fail to add the update buffer for uniforms command to the command builder"
+            })?;
+        }
         cmd_buf_builder
-            .update_buffer(self.uniform_buffer.clone(), uniform)
-            .chain_err(|| {
-                "fail to add the update buffer for uniform command to the command builder"
-            })?
             .begin_render_pass(
                 framebuffer.clone(),
                 SubpassContents::Inline,
@@ -141,7 +153,7 @@ impl<V: VertexT, M: Material, S> Mesh<V, M, S> {
                 &DynamicState::none(),
                 vec![self.vertex_buffer.clone()],
                 self.index_buffer.clone(),
-                self.descriptor_set.clone(),
+                self.descriptor_sets.iter().cloned().collect::<Vec<_>>(),
                 (),
             )
             .chain_err(|| "fail to add the draw command to the command builder")?
@@ -156,9 +168,8 @@ pub struct Renderer<V: VertexT, M: Material> {
     queue: Arc<Queue>,
     render_pass: Arc<dyn RenderPassAbstract + Send + Sync>,
     pipeline: Arc<dyn GraphicsPipelineAbstract + Send + Sync>,
+    pipeline_layout: Box<dyn PipelineLayoutAbstract>,
     phantom: PhantomData<(V, M)>,
-    // The only descriptor set layout for the single uniform input
-    descriptor_set_0_layout: Arc<UnsafeDescriptorSetLayout>,
 }
 
 impl<V: VertexT, M: Material> Renderer<V, M> {
@@ -214,28 +225,26 @@ impl<V: VertexT, M: Material> Renderer<V, M> {
                 .build(device.clone())
                 .chain_err(|| "fail to create graphics pipeline")?,
         );
-        let descriptor_set_0_layout = match pipeline.layout().descriptor_set_layout(0) {
-            Some(layout) => layout.clone(),
-            None => {
-                return Err(
-                    "can't find the first descriptor that is supposed to be bound with \
-                    the uniform"
-                        .into(),
-                )
-            }
-        };
+        let pipeline_layout = Box::new(
+            PipelineLayout::new(device.clone(), pipeline.clone())
+                .chain_err(|| "fail to create pipeline layout from the graphics pipeline")?,
+        );
         Ok(Self {
             device,
             queue,
             render_pass,
             pipeline,
-            descriptor_set_0_layout,
+            pipeline_layout,
             phantom: PhantomData,
         })
     }
 
     // M is the model space
-    pub fn create_mesh<S>(self: &Arc<Self>, data: MeshData<V>) -> Result<Mesh<V, M, S>> {
+    pub fn create_mesh<S>(
+        self: &Arc<Self>,
+        data: MeshData<V>,
+        material: &M,
+    ) -> Result<Mesh<V, M, S>> {
         let MeshData {
             vertices: vertex_data,
             indices: index_data,
@@ -259,26 +268,30 @@ impl<V: VertexT, M: Material> Renderer<V, M> {
             .wait(None)
             .chain_err(|| "fail to wait for the vertex buffer and the index buffer being initialized")?;
 
-        let uniform_buffer = DeviceLocalBuffer::<M::Uniform>::new(
-            self.device.clone(),
-            BufferUsage::uniform_buffer_transfer_destination(),
-            vec![self.queue.family()].into_iter(),
-        )
-        .chain_err(|| "fail to create uniform buffer")?;
-
-        let descriptor_set = Arc::new(
-            PersistentDescriptorSet::start(self.descriptor_set_0_layout.clone())
-                .add_buffer(uniform_buffer.clone())
-                .chain_err(|| "fail to add the uniform buffer to the descriptor set")?
-                .build()
-                .chain_err(|| "fail to create the descriptor set for the uniform")?,
-        );
+        let uniforms = material
+            .create_uniforms(self.device.clone(), self.queue.clone())
+            .chain_err(|| "fail to create uniforms")?;
+        let descriptor_sets: Result<Vec<_>> = uniforms.create_descriptor_bindings().into_iter().map(|binding| {
+            let DescriptorSetBinding { index, desc } = binding;
+            let layout = self.pipeline_layout.descriptor_set_layout(index).ok_or::<Error>(format!("can't find the descriptor at the index {}", index).into())?;
+            let descriptor_set_builder = PersistentDescriptorSet::start(layout.clone());
+            let descriptor_set_builder = match desc {
+                DescriptorSetBindingDesc::Buffer(buffer) => descriptor_set_builder.add_buffer(buffer).chain_err(|| format!("fail to add buffer to the descriptor set of the uniform, descriptor set index = {}", index))?,
+                DescriptorSetBindingDesc::Image(image) => {
+                    unimplemented!()
+                    // descriptor_set_builder.add_sampled_image(, Sampler::simple_repeat_linear(self.device.clone())).chain_err(|| format!("fail to add sampler to the descriptor set of the uniform, descriptor set index = {}", index))?
+                },
+            };
+            let descriptor_set = descriptor_set_builder.build().chain_err(|| format!("fail to create the descriptor set for the uniforms, descriptor set index = {}", index))?;
+            Ok(Arc::new(descriptor_set) as Arc<dyn DescriptorSet + Send + Sync + 'static>)
+        }).collect();
+        let descriptor_sets = descriptor_sets?;
         Ok(Mesh {
             renderer: self.clone(),
             vertex_buffer,
             index_buffer,
-            descriptor_set,
-            uniform_buffer,
+            descriptor_sets,
+            uniforms: Arc::new(Mutex::new(uniforms)),
             phantom: PhantomData,
         })
     }

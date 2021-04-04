@@ -17,7 +17,7 @@ use vulkano::{
 
 use super::{
     light::{PointLight, PointLightRenderer},
-    material::{Material, UniformT},
+    material::{Material, UniformsT},
     Camera, TriangleSpace, WorldSpace,
 };
 use crate::errors::*;
@@ -64,13 +64,11 @@ impl Renderer {
             .point_light_renderer
             .create_framebuffer(image)
             .chain_err(|| "fail to create framebuffer")?;
-        let uniform = self.point_light.material.create_uniform();
         self.point_light
             .mesh
             .draw_commands(
                 cmd_buf_builder,
                 framebuffer,
-                uniform,
                 &state.model_transform,
                 &state.camera,
             )
