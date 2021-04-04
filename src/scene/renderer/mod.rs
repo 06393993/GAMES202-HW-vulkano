@@ -83,12 +83,15 @@ impl Renderer {
                     position: [-0.5, -0.5],
                 },
                 Vertex {
-                    position: [0.0, 0.5],
+                    position: [0.5, -0.5],
                 },
                 Vertex {
-                    position: [0.5, -0.25],
+                    position: [0.5, 0.5],
                 },
-            ])
+                Vertex {
+                    position: [-0.5, 0.5]
+                },
+            ], vec![0, 1, 2, 2, 3, 0])
             .chain_err(|| "fail to create mesh")?;
         Ok(Self {
             mesh_renderer,

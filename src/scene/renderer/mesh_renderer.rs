@@ -46,6 +46,7 @@ pub trait Uniform: Sized + Send + Sync + 'static {
 pub struct Mesh<V: Vertex, U: Uniform, M> {
     renderer: Arc<Renderer<V, U>>,
     vertex_buffer: Arc<dyn BufferAccess + Send + Sync>,
+    index_buffer: Arc<ImmutableBuffer<[u16]>>,
     descriptor_set: Arc<dyn DescriptorSet + Send + Sync>,
     uniform_buffer: Arc<dyn TypedBufferAccess<Content = U> + Send + Sync>,
     phantom: PhantomData<M>,
@@ -73,10 +74,11 @@ impl<V: Vertex, U: Uniform, M> Mesh<V, U, M> {
                 vec![ClearValue::None],
             )
             .chain_err(|| "fail to add the begin renderpass command to the command builder")?
-            .draw(
+            .draw_indexed(
                 self.renderer.pipeline.clone(),
                 &DynamicState::none(),
                 vec![self.vertex_buffer.clone()],
+                self.index_buffer.clone(),
                 self.descriptor_set.clone(),
                 (),
             )
@@ -178,24 +180,37 @@ impl<V: Vertex, U: Uniform> Renderer<V, U> {
     }
 
     // M is the model space
-    pub fn create_mesh<M>(self: &Arc<Self>, vertex_data: Vec<V>) -> Result<Mesh<V, U, M>> {
+    pub fn create_mesh<M>(
+        self: &Arc<Self>,
+        vertex_data: Vec<V>,
+        index_data: Vec<u16>,
+    ) -> Result<Mesh<V, U, M>> {
         let (vertex_buffer, vertex_buffer_init) = ImmutableBuffer::from_iter(
             vertex_data.into_iter(),
             BufferUsage::vertex_buffer(),
             self.queue.clone(),
         )
         .chain_err(|| "fail to create vertex buffer")?;
+        let (index_buffer, index_buffer_init) = ImmutableBuffer::from_iter(
+            index_data.into_iter(),
+            BufferUsage::index_buffer(),
+            self.queue.clone(),
+        )
+        .chain_err(|| "fail to create index buffer")?;
         vertex_buffer_init
+            .join(index_buffer_init)
             .then_signal_fence_and_flush()
-            .chain_err(|| "fail to signal the fence and flush when initializing the vertex buffer")?
+            .chain_err(|| "fail to signal the fence and flush when initializing the vertex buffer and the index buffer")?
             .wait(None)
-            .chain_err(|| "fail to wait for vertex buffer being initialized")?;
+            .chain_err(|| "fail to wait for the vertex buffer and the index buffer being initialized")?;
+
         let uniform_buffer = DeviceLocalBuffer::<U>::new(
             self.device.clone(),
             BufferUsage::uniform_buffer_transfer_destination(),
             vec![self.queue.family()].into_iter(),
         )
         .chain_err(|| "fail to create uniform buffer")?;
+
         let descriptor_set = Arc::new(
             PersistentDescriptorSet::start(self.descriptor_set_0_layout.clone())
                 .add_buffer(uniform_buffer.clone())
@@ -206,6 +221,7 @@ impl<V: Vertex, U: Uniform> Renderer<V, U> {
         Ok(Mesh {
             renderer: self.clone(),
             vertex_buffer,
+            index_buffer,
             descriptor_set,
             uniform_buffer,
             phantom: PhantomData,
