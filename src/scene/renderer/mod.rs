@@ -16,11 +16,11 @@ use vulkano::{
 };
 
 use super::{
-    shaders::{Shaders, ShadersT},
+    shaders::{Shaders as SimpleShaders, ShadersT},
     Camera, TriangleSpace, WorldSpace,
 };
 use crate::errors::*;
-use mesh_renderer::{Mesh, MeshData, Renderer as MeshRenderer, SimpleVertex};
+use mesh_renderer::{Material, Mesh, MeshData, Renderer as MeshRenderer, SimpleVertex, UniformT};
 
 #[derive(Default, Copy, Clone)]
 struct Vertex {
@@ -40,7 +40,7 @@ vulkano::impl_vertex!(Vertex, position);
 // Uniform object may not be read from the CPU
 #[allow(dead_code)]
 #[derive(Default)]
-struct Uniform {
+struct SimpleUniform {
     model: [f32; 16],
     view: [f32; 16],
     proj: [f32; 16],
@@ -53,7 +53,7 @@ pub struct State {
     pub model_transform: Transform3D<f32, TriangleSpace, WorldSpace>,
 }
 
-impl mesh_renderer::Uniform for Uniform {
+impl UniformT for SimpleUniform {
     fn update_model_matrix(&mut self, mat: [f32; 16]) {
         self.model.copy_from_slice(&mat);
     }
@@ -67,9 +67,16 @@ impl mesh_renderer::Uniform for Uniform {
     }
 }
 
+struct SimpleMaterial;
+
+impl Material for SimpleMaterial {
+    type Uniform = SimpleUniform;
+    type Shaders = SimpleShaders;
+}
+
 pub struct Renderer {
-    mesh_renderer: Arc<MeshRenderer<Vertex, Uniform>>,
-    mesh: Mesh<Vertex, Uniform, TriangleSpace>,
+    mesh_renderer: Arc<MeshRenderer<Vertex, SimpleMaterial>>,
+    mesh: Mesh<Vertex, SimpleMaterial, TriangleSpace>,
 }
 
 impl Renderer {
@@ -80,9 +87,8 @@ impl Renderer {
         width: u32,
         height: u32,
     ) -> Result<Self> {
-        let shaders = Shaders::load(device.clone()).chain_err(|| "fail to load shaders")?;
         let mesh_renderer = Arc::new(
-            MeshRenderer::init(device, &shaders, queue, format, width, height)
+            MeshRenderer::init(device, queue, format, width, height)
                 .chain_err(|| "fail to create mesh renderer")?,
         );
         let mesh_data = MeshData::cube();
@@ -105,7 +111,7 @@ impl Renderer {
             .mesh_renderer
             .create_framebuffer(image)
             .chain_err(|| "fail to create framebuffer")?;
-        let mut uniform = Uniform::default();
+        let mut uniform = SimpleUniform::default();
         uniform.color[0..3].copy_from_slice(&state.color);
         uniform.color[3] = 1.0;
         self.mesh

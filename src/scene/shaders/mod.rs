@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use vulkano::{
+    descriptor::pipeline_layout::PipelineLayoutDesc,
     device::Device,
-    pipeline::shader::{GraphicsEntryPoint, GraphicsEntryPointAbstract},
+    pipeline::shader::{GraphicsEntryPoint, ShaderInterfaceDef},
 };
 
 use crate::errors::*;
@@ -26,13 +27,31 @@ fn __() {
     let _ = include_bytes!("vertex_shader.glsl");
 }
 
-pub trait ShadersT<'a>: Sized {
-    type VertexShaderMainEntryPoint: GraphicsEntryPointAbstract<SpecializationConstants = ()> + 'a;
-    type FragmentShaderMainEntryPoint: GraphicsEntryPointAbstract<SpecializationConstants = ()> + 'a;
+pub trait ShadersT: Sized {
+    type VertexShaderLayout: PipelineLayoutDesc + Clone + Send + Sync + 'static;
+    type VertexShaderMainInput: ShaderInterfaceDef;
+    type VertexShaderMainOutput: ShaderInterfaceDef;
+    type FragmentShaderLayout: PipelineLayoutDesc + Clone + Send + Sync + 'static;
+    type FragmentShaderMainInput: ShaderInterfaceDef;
+    type FragmentShaderMainOutput: ShaderInterfaceDef;
 
     fn load(device: Arc<Device>) -> Result<Self>;
-    fn vertex_shader_main_entry_point(&'a self) -> Self::VertexShaderMainEntryPoint;
-    fn fragment_shader_main_entry_point(&'a self) -> Self::FragmentShaderMainEntryPoint;
+    fn vertex_shader_main_entry_point(
+        &self,
+    ) -> GraphicsEntryPoint<
+        (),
+        Self::VertexShaderMainInput,
+        Self::VertexShaderMainOutput,
+        Self::VertexShaderLayout,
+    >;
+    fn fragment_shader_main_entry_point(
+        &self,
+    ) -> GraphicsEntryPoint<
+        (),
+        Self::FragmentShaderMainInput,
+        Self::FragmentShaderMainOutput,
+        Self::FragmentShaderLayout,
+    >;
 }
 
 pub(super) struct Shaders {
@@ -40,21 +59,13 @@ pub(super) struct Shaders {
     fragment_shader: fragment_shader::Shader,
 }
 
-impl<'a> ShadersT<'a> for Shaders {
-    type VertexShaderMainEntryPoint = GraphicsEntryPoint<
-        'a,
-        (),
-        vertex_shader::MainInput,
-        vertex_shader::MainOutput,
-        vertex_shader::Layout,
-    >;
-    type FragmentShaderMainEntryPoint = GraphicsEntryPoint<
-        'a,
-        (),
-        fragment_shader::MainInput,
-        fragment_shader::MainOutput,
-        fragment_shader::Layout,
-    >;
+impl ShadersT for Shaders {
+    type VertexShaderLayout = vertex_shader::Layout;
+    type VertexShaderMainInput = vertex_shader::MainInput;
+    type VertexShaderMainOutput = vertex_shader::MainOutput;
+    type FragmentShaderLayout = fragment_shader::Layout;
+    type FragmentShaderMainInput = fragment_shader::MainInput;
+    type FragmentShaderMainOutput = fragment_shader::MainOutput;
 
     fn load(device: Arc<Device>) -> Result<Self> {
         Ok(Self {
@@ -65,11 +76,25 @@ impl<'a> ShadersT<'a> for Shaders {
         })
     }
 
-    fn vertex_shader_main_entry_point(&'a self) -> Self::VertexShaderMainEntryPoint {
+    fn vertex_shader_main_entry_point(
+        &self,
+    ) -> GraphicsEntryPoint<
+        (),
+        Self::VertexShaderMainInput,
+        Self::VertexShaderMainOutput,
+        Self::VertexShaderLayout,
+    > {
         self.vertex_shader.main_entry_point()
     }
 
-    fn fragment_shader_main_entry_point(&'a self) -> Self::FragmentShaderMainEntryPoint {
+    fn fragment_shader_main_entry_point(
+        &self,
+    ) -> GraphicsEntryPoint<
+        (),
+        Self::FragmentShaderMainInput,
+        Self::FragmentShaderMainOutput,
+        Self::FragmentShaderLayout,
+    > {
         self.fragment_shader.main_entry_point()
     }
 }

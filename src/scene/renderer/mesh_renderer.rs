@@ -20,8 +20,7 @@ use vulkano::{
     framebuffer::{Framebuffer, FramebufferAbstract, RenderPassAbstract, Subpass},
     image::traits::ImageViewAccess,
     pipeline::{
-        shader::EntryPointAbstract,
-        vertex::Vertex,
+        vertex::Vertex as VertexT,
         viewport::{Scissor, Viewport},
         GraphicsPipeline, GraphicsPipelineAbstract,
     },
@@ -31,7 +30,7 @@ use vulkano::{
 use super::{Camera, ShadersT, WorldSpace};
 use crate::errors::*;
 
-pub trait Uniform: Sized + Send + Sync + 'static {
+pub trait UniformT: Sized + Send + Sync + 'static {
     fn update_model_matrix(&mut self, mat: [f32; 16]);
     fn update_view_matrix(&mut self, mat: [f32; 16]);
     fn update_proj_matrix(&mut self, mat: [f32; 16]);
@@ -42,16 +41,16 @@ pub trait Uniform: Sized + Send + Sync + 'static {
     }
 }
 
-pub trait SimpleVertex: Vertex {
+pub trait SimpleVertex: VertexT {
     fn create_from_position(x: f32, y: f32, z: f32) -> Self;
 }
 
-pub struct MeshData<V: Vertex> {
+pub struct MeshData<V: VertexT> {
     vertices: Vec<V>,
     indices: Vec<u16>,
 }
 
-impl<V: Vertex> MeshData<V> {
+impl<V: VertexT> MeshData<V> {
     pub fn create(vertices: Vec<V>, indices: Vec<u16>) -> Result<Self> {
         for index in indices.iter() {
             if *index as usize >= vertices.len() {
@@ -116,23 +115,28 @@ impl<V: SimpleVertex> MeshData<V> {
     }
 }
 
-// M stands for model space
-pub struct Mesh<V: Vertex, U: Uniform, M> {
-    renderer: Arc<Renderer<V, U>>,
+pub trait Material {
+    type Uniform: UniformT;
+    type Shaders: ShadersT;
+}
+
+// S stands for model space
+pub struct Mesh<V: VertexT, M: Material, S> {
+    renderer: Arc<Renderer<V, M>>,
     vertex_buffer: Arc<dyn BufferAccess + Send + Sync>,
     index_buffer: Arc<ImmutableBuffer<[u16]>>,
     descriptor_set: Arc<dyn DescriptorSet + Send + Sync>,
-    uniform_buffer: Arc<dyn TypedBufferAccess<Content = U> + Send + Sync>,
-    phantom: PhantomData<M>,
+    uniform_buffer: Arc<dyn TypedBufferAccess<Content = M::Uniform> + Send + Sync>,
+    phantom: PhantomData<S>,
 }
 
-impl<V: Vertex, U: Uniform, M> Mesh<V, U, M> {
+impl<V: VertexT, M: Material, S> Mesh<V, M, S> {
     pub fn draw_commands<P>(
         &self,
         cmd_buf_builder: &mut AutoCommandBufferBuilder<P>,
         framebuffer: Arc<dyn FramebufferAbstract + Send + Sync>,
-        mut uniform: U,
-        model_transform: &Transform3D<f32, M, WorldSpace>,
+        mut uniform: M::Uniform,
+        model_transform: &Transform3D<f32, S, WorldSpace>,
         camera: &Camera,
     ) -> Result<()> {
         uniform.update_model_matrix(model_transform.to_array());
@@ -163,32 +167,25 @@ impl<V: Vertex, U: Uniform, M> Mesh<V, U, M> {
     }
 }
 
-pub struct Renderer<V: Vertex, U: Uniform> {
+pub struct Renderer<V: VertexT, M: Material> {
     device: Arc<Device>,
     queue: Arc<Queue>,
     render_pass: Arc<dyn RenderPassAbstract + Send + Sync>,
     pipeline: Arc<dyn GraphicsPipelineAbstract + Send + Sync>,
-    phantom: PhantomData<(V, U)>,
+    phantom: PhantomData<(V, M)>,
     // The only descriptor set layout for the single uniform input
     descriptor_set_0_layout: Arc<UnsafeDescriptorSetLayout>,
 }
 
-impl<V: Vertex, U: Uniform> Renderer<V, U> {
-    pub fn init<'a, S>(
+impl<V: VertexT, M: Material> Renderer<V, M> {
+    pub fn init(
         device: Arc<Device>,
-        shaders: &'a S,
         queue: Arc<Queue>,
         format: Format,
         width: u32,
         height: u32,
-    ) -> Result<Self>
-    where
-        S: ShadersT<'a>,
-        <S::VertexShaderMainEntryPoint as EntryPointAbstract>::PipelineLayout:
-            Clone + Send + Sync + 'static,
-        <S::FragmentShaderMainEntryPoint as EntryPointAbstract>::PipelineLayout:
-            Clone + Send + Sync + 'static,
-    {
+    ) -> Result<Self> {
+        let shaders = M::Shaders::load(device.clone()).chain_err(|| "fail to load shaders")?;
         let render_pass = Arc::new(
             vulkano::single_pass_renderpass!(
                 device.clone(),
@@ -254,7 +251,7 @@ impl<V: Vertex, U: Uniform> Renderer<V, U> {
     }
 
     // M is the model space
-    pub fn create_mesh<M>(self: &Arc<Self>, data: MeshData<V>) -> Result<Mesh<V, U, M>> {
+    pub fn create_mesh<S>(self: &Arc<Self>, data: MeshData<V>) -> Result<Mesh<V, M, S>> {
         let MeshData {
             vertices: vertex_data,
             indices: index_data,
@@ -278,7 +275,7 @@ impl<V: Vertex, U: Uniform> Renderer<V, U> {
             .wait(None)
             .chain_err(|| "fail to wait for the vertex buffer and the index buffer being initialized")?;
 
-        let uniform_buffer = DeviceLocalBuffer::<U>::new(
+        let uniform_buffer = DeviceLocalBuffer::<M::Uniform>::new(
             self.device.clone(),
             BufferUsage::uniform_buffer_transfer_destination(),
             vec![self.queue.family()].into_iter(),
