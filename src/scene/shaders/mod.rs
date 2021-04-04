@@ -1,3 +1,5 @@
+pub mod light;
+
 use std::sync::Arc;
 
 use vulkano::{
@@ -7,25 +9,6 @@ use vulkano::{
 };
 
 use crate::errors::*;
-
-pub(super) mod vertex_shader {
-    vulkano_shaders::shader! {
-        ty: "vertex",
-        path: "src/scene/shaders/vertex_shader.glsl",
-    }
-}
-
-pub(super) mod fragment_shader {
-    vulkano_shaders::shader! {
-        ty: "fragment",
-        path: "src/scene/shaders/fragment_shader.glsl",
-    }
-}
-
-fn __() {
-    let _ = include_bytes!("fragment_shader.glsl");
-    let _ = include_bytes!("vertex_shader.glsl");
-}
 
 pub trait ShadersT: Sized {
     type VertexShaderLayout: PipelineLayoutDesc + Clone + Send + Sync + 'static;
@@ -54,47 +37,55 @@ pub trait ShadersT: Sized {
     >;
 }
 
-pub(super) struct Shaders {
-    vertex_shader: vertex_shader::Shader,
-    fragment_shader: fragment_shader::Shader,
-}
+#[macro_export]
+macro_rules! impl_shaders {
+    ($id:ident, $vs_mod:ident, $fs_mod:ident) => {
+        pub struct $id {
+            vertex_shader: $vs_mod::Shader,
+            fragment_shader: $fs_mod::Shader,
+        }
 
-impl ShadersT for Shaders {
-    type VertexShaderLayout = vertex_shader::Layout;
-    type VertexShaderMainInput = vertex_shader::MainInput;
-    type VertexShaderMainOutput = vertex_shader::MainOutput;
-    type FragmentShaderLayout = fragment_shader::Layout;
-    type FragmentShaderMainInput = fragment_shader::MainInput;
-    type FragmentShaderMainOutput = fragment_shader::MainOutput;
+        impl $crate::scene::shaders::ShadersT for $id {
+            type VertexShaderLayout = $vs_mod::Layout;
+            type VertexShaderMainInput = $vs_mod::MainInput;
+            type VertexShaderMainOutput = $vs_mod::MainOutput;
+            type FragmentShaderLayout = $fs_mod::Layout;
+            type FragmentShaderMainInput = $fs_mod::MainInput;
+            type FragmentShaderMainOutput = $fs_mod::MainOutput;
 
-    fn load(device: Arc<Device>) -> Result<Self> {
-        Ok(Self {
-            vertex_shader: vertex_shader::Shader::load(device.clone())
-                .chain_err(|| "fail to load the vertex shader")?,
-            fragment_shader: fragment_shader::Shader::load(device.clone())
-                .chain_err(|| "fail to load the fragment shader")?,
-        })
-    }
+            fn load(
+                device: ::std::sync::Arc<::vulkano::device::Device>,
+            ) -> $crate::errors::Result<Self> {
+                use $crate::errors::*;
+                Ok(Self {
+                    vertex_shader: $vs_mod::Shader::load(device.clone())
+                        .chain_err(|| "fail to load the vertex shader")?,
+                    fragment_shader: $fs_mod::Shader::load(device.clone())
+                        .chain_err(|| "fail to load the fragment shader")?,
+                })
+            }
 
-    fn vertex_shader_main_entry_point(
-        &self,
-    ) -> GraphicsEntryPoint<
-        (),
-        Self::VertexShaderMainInput,
-        Self::VertexShaderMainOutput,
-        Self::VertexShaderLayout,
-    > {
-        self.vertex_shader.main_entry_point()
-    }
+            fn vertex_shader_main_entry_point(
+                &self,
+            ) -> ::vulkano::pipeline::shader::GraphicsEntryPoint<
+                (),
+                Self::VertexShaderMainInput,
+                Self::VertexShaderMainOutput,
+                Self::VertexShaderLayout,
+            > {
+                self.vertex_shader.main_entry_point()
+            }
 
-    fn fragment_shader_main_entry_point(
-        &self,
-    ) -> GraphicsEntryPoint<
-        (),
-        Self::FragmentShaderMainInput,
-        Self::FragmentShaderMainOutput,
-        Self::FragmentShaderLayout,
-    > {
-        self.fragment_shader.main_entry_point()
-    }
+            fn fragment_shader_main_entry_point(
+                &self,
+            ) -> ::vulkano::pipeline::shader::GraphicsEntryPoint<
+                (),
+                Self::FragmentShaderMainInput,
+                Self::FragmentShaderMainOutput,
+                Self::FragmentShaderLayout,
+            > {
+                self.fragment_shader.main_entry_point()
+            }
+        }
+    };
 }

@@ -16,36 +16,12 @@ use vulkano::{
 };
 
 use super::{
-    shaders::{Shaders as SimpleShaders, ShadersT},
+    light::{PointLight, PointLightRenderer},
+    material::{Material, UniformT},
     Camera, TriangleSpace, WorldSpace,
 };
 use crate::errors::*;
-use mesh_renderer::{Material, Mesh, MeshData, Renderer as MeshRenderer, SimpleVertex, UniformT};
-
-#[derive(Default, Copy, Clone)]
-struct Vertex {
-    position: [f32; 4],
-}
-
-impl SimpleVertex for Vertex {
-    fn create_from_position(x: f32, y: f32, z: f32) -> Self {
-        Vertex {
-            position: [x, y, z, 1.0],
-        }
-    }
-}
-
-vulkano::impl_vertex!(Vertex, position);
-
-// Uniform object may not be read from the CPU
-#[allow(dead_code)]
-#[derive(Default)]
-struct SimpleUniform {
-    model: [f32; 16],
-    view: [f32; 16],
-    proj: [f32; 16],
-    color: [f32; 4],
-}
+pub use mesh_renderer::{Mesh, MeshData, Renderer as MeshRenderer, SimpleVertex};
 
 pub struct State {
     pub color: [f32; 3],
@@ -53,30 +29,9 @@ pub struct State {
     pub model_transform: Transform3D<f32, TriangleSpace, WorldSpace>,
 }
 
-impl UniformT for SimpleUniform {
-    fn update_model_matrix(&mut self, mat: [f32; 16]) {
-        self.model.copy_from_slice(&mat);
-    }
-
-    fn update_view_matrix(&mut self, mat: [f32; 16]) {
-        self.view.copy_from_slice(&mat);
-    }
-
-    fn update_proj_matrix(&mut self, mat: [f32; 16]) {
-        self.proj.copy_from_slice(&mat);
-    }
-}
-
-struct SimpleMaterial;
-
-impl Material for SimpleMaterial {
-    type Uniform = SimpleUniform;
-    type Shaders = SimpleShaders;
-}
-
 pub struct Renderer {
-    mesh_renderer: Arc<MeshRenderer<Vertex, SimpleMaterial>>,
-    mesh: Mesh<Vertex, SimpleMaterial, TriangleSpace>,
+    point_light_renderer: Arc<PointLightRenderer>,
+    point_light: PointLight<TriangleSpace>,
 }
 
 impl Renderer {
@@ -87,17 +42,15 @@ impl Renderer {
         width: u32,
         height: u32,
     ) -> Result<Self> {
-        let mesh_renderer = Arc::new(
+        let point_light_renderer = Arc::new(
             MeshRenderer::init(device, queue, format, width, height)
                 .chain_err(|| "fail to create mesh renderer")?,
         );
-        let mesh_data = MeshData::cube();
-        let mesh = mesh_renderer
-            .create_mesh(mesh_data)
-            .chain_err(|| "fail to create mesh")?;
+        let point_light = PointLight::new(point_light_renderer.clone(), 1.0, [1.0, 0.0, 0.0])
+            .chain_err(|| "fail to create point light")?;
         Ok(Self {
-            mesh_renderer,
-            mesh,
+            point_light_renderer,
+            point_light,
         })
     }
 
@@ -108,13 +61,12 @@ impl Renderer {
         state: &State,
     ) -> Result<()> {
         let framebuffer = self
-            .mesh_renderer
+            .point_light_renderer
             .create_framebuffer(image)
             .chain_err(|| "fail to create framebuffer")?;
-        let mut uniform = SimpleUniform::default();
-        uniform.color[0..3].copy_from_slice(&state.color);
-        uniform.color[3] = 1.0;
-        self.mesh
+        let uniform = self.point_light.material.create_uniform();
+        self.point_light
+            .mesh
             .draw_commands(
                 cmd_buf_builder,
                 framebuffer,

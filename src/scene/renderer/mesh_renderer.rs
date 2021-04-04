@@ -27,19 +27,8 @@ use vulkano::{
     sync::GpuFuture,
 };
 
-use super::{Camera, ShadersT, WorldSpace};
+use super::{super::shaders::ShadersT, Camera, Material, UniformT, WorldSpace};
 use crate::errors::*;
-
-pub trait UniformT: Sized + Send + Sync + 'static {
-    fn update_model_matrix(&mut self, mat: [f32; 16]);
-    fn update_view_matrix(&mut self, mat: [f32; 16]);
-    fn update_proj_matrix(&mut self, mat: [f32; 16]);
-
-    fn update_view_proj_matrix_from_camera(&mut self, camera: &Camera) {
-        self.update_view_matrix(camera.get_view_transform().to_array());
-        self.update_proj_matrix(camera.get_projection_transform().to_array());
-    }
-}
 
 pub trait SimpleVertex: VertexT {
     fn create_from_position(x: f32, y: f32, z: f32) -> Self;
@@ -113,11 +102,6 @@ impl<V: SimpleVertex> MeshData<V> {
         )
         .expect("fail to create cube")
     }
-}
-
-pub trait Material {
-    type Uniform: UniformT;
-    type Shaders: ShadersT;
 }
 
 // S stands for model space

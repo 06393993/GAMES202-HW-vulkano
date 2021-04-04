@@ -1,4 +1,6 @@
 mod camera;
+mod light;
+mod material;
 mod renderer;
 mod shaders;
 
