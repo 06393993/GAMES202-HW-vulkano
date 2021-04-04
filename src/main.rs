@@ -1,6 +1,6 @@
 #![recursion_limit = "1024"]
 
-mod scene_renderer;
+mod scene;
 
 use std::time::{Duration, Instant};
 
@@ -10,7 +10,7 @@ use winit::event::VirtualKeyCode;
 #[macro_use]
 extern crate error_chain;
 
-use scene_renderer::{
+use scene::{
     Camera, CameraControl, CameraDirection, State as SceneState, TriangleSpace, WorldSpace,
 };
 
@@ -47,7 +47,7 @@ mod support {
 
     use imgui_vulkano_renderer::Renderer as UiRenderer;
 
-    use super::scene_renderer::{Renderer as SceneRenderer, State as SceneState};
+    use super::scene::{Renderer as SceneRenderer, State as SceneState};
     use crate::errors::*;
 
     mod clipboard {
@@ -90,7 +90,7 @@ mod support {
         pub scene_renderer: SceneRenderer,
     }
 
-    pub fn init(title: &str) -> System {
+    pub fn init(title: &str) -> Result<System> {
         let required_extensions = vulkano_win::required_extensions();
         let instance = Instance::new(None, &required_extensions, None).unwrap();
 
@@ -203,9 +203,10 @@ mod support {
             format,
             surface.window().inner_size().width,
             surface.window().inner_size().height,
-        );
+        )
+        .chain_err(|| "fail to create scene renderer")?;
 
-        System {
+        Ok(System {
             event_loop,
             device,
             queue,
@@ -217,7 +218,7 @@ mod support {
             ui_renderer,
             font_size,
             scene_renderer,
-        }
+        })
     }
 
     impl System {
@@ -335,11 +336,18 @@ mod support {
                         .clear_color_image(images[image_num].clone(), [0.0; 4].into())
                         .unwrap();
 
-                    scene_renderer.draw_commands(
-                        &mut scene_cmd_buf_builder,
-                        images[image_num].clone(),
-                        &app_state.get_scene_state(),
-                    );
+                    if let Err(e) = scene_renderer
+                        .draw_commands(
+                            &mut scene_cmd_buf_builder,
+                            images[image_num].clone(),
+                            &app_state.get_scene_state(),
+                        )
+                        .chain_err(|| "scene renderer fail to issue draw commands")
+                    {
+                        *control_flow = ControlFlow::Exit;
+                        *res.lock().unwrap() = Err(e);
+                        return;
+                    }
                     let scene_cmd_buf = scene_cmd_buf_builder.build().unwrap();
 
                     let future = previous_frame_end
@@ -403,7 +411,6 @@ struct AppState {
     color_picker_visible: bool,
     color: [f32; 3],
     recent_frame_times: Vec<Instant>,
-    time_start: Instant,
     camera: Option<Camera>,
     camera_speed: f32,
     triangle_transform: Transform3D<f32, TriangleSpace, WorldSpace>,
@@ -415,7 +422,6 @@ impl Default for AppState {
             color_picker_visible: false,
             color: [1.0, 0.0, 0.0],
             recent_frame_times: vec![],
-            time_start: Instant::now(),
             camera: None,
             camera_speed: 0.05,
             triangle_transform: Transform3D::identity(),
@@ -506,11 +512,12 @@ impl AppState {
 }
 
 fn main() {
-    run()
+    // TODO: write a error handler to also catch errors here
+    run().unwrap()
 }
 
-fn run() -> ! {
-    let system = support::init(file!());
+fn run() -> Result<()> {
+    let system = support::init(file!())?;
 
     system.main_loop(move |_, ui, mut app_state: AppState| {
         let now = Instant::now();
@@ -541,7 +548,9 @@ fn run() -> ! {
             cp.build(&ui);
         }
 
-        app_state.update_camera(ui)?;
+        app_state
+            .update_camera(ui)
+            .chain_err(|| "fail to update camera in main loop")?;
         app_state.update_scene(Duration::from_secs_f32(ui.io().delta_time));
         Ok(app_state)
     });
