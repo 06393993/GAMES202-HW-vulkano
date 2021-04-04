@@ -4,7 +4,7 @@ mod scene;
 
 use std::time::{Duration, Instant};
 
-use euclid::{approxeq::ApproxEq, point3, vec3, Angle, Point3D, Transform3D};
+use euclid::{approxeq::ApproxEq, point3, vec3, Angle, Point3D, Scale, Transform3D};
 use imgui::*;
 use winit::event::VirtualKeyCode;
 #[macro_use]
@@ -424,7 +424,7 @@ impl Default for AppState {
             recent_frame_times: vec![],
             camera: None,
             camera_speed: 0.05,
-            triangle_transform: Transform3D::identity(),
+            triangle_transform: Transform3D::from_scale(Scale::new(0.5)),
         }
     }
 }

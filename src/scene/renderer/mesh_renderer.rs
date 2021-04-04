@@ -42,6 +42,80 @@ pub trait Uniform: Sized + Send + Sync + 'static {
     }
 }
 
+pub trait SimpleVertex: Vertex {
+    fn create_from_position(x: f32, y: f32, z: f32) -> Self;
+}
+
+pub struct MeshData<V: Vertex> {
+    vertices: Vec<V>,
+    indices: Vec<u16>,
+}
+
+impl<V: Vertex> MeshData<V> {
+    pub fn create(vertices: Vec<V>, indices: Vec<u16>) -> Result<Self> {
+        for index in indices.iter() {
+            if *index as usize >= vertices.len() {
+                return Err(format!(
+                    "index({}) exceeds the length of the vertex buffer({})",
+                    index,
+                    vertices.len(),
+                )
+                .into());
+            }
+        }
+        Ok(Self { vertices, indices })
+    }
+}
+
+impl<V: SimpleVertex> MeshData<V> {
+    pub fn cube() -> Self {
+        let v = V::create_from_position;
+        Self::create(
+            vec![
+                // Front face
+                v(-1.0, -1.0, 1.0),
+                v(1.0, -1.0, 1.0),
+                v(1.0, 1.0, 1.0),
+                v(-1.0, 1.0, 1.0),
+                // Back face
+                v(-1.0, -1.0, -1.0),
+                v(-1.0, 1.0, -1.0),
+                v(1.0, 1.0, -1.0),
+                v(1.0, -1.0, -1.0),
+                // Top face
+                v(-1.0, 1.0, -1.0),
+                v(-1.0, 1.0, 1.0),
+                v(1.0, 1.0, 1.0),
+                v(1.0, 1.0, -1.0),
+                // Bottom face
+                v(-1.0, -1.0, -1.0),
+                v(1.0, -1.0, -1.0),
+                v(1.0, -1.0, 1.0),
+                v(-1.0, -1.0, 1.0),
+                // Right face
+                v(1.0, -1.0, -1.0),
+                v(1.0, 1.0, -1.0),
+                v(1.0, 1.0, 1.0),
+                v(1.0, -1.0, 1.0),
+                // Left face
+                v(-1.0, -1.0, -1.0),
+                v(-1.0, -1.0, 1.0),
+                v(-1.0, 1.0, 1.0),
+                v(-1.0, 1.0, -1.0),
+            ],
+            vec![
+                0, 1, 2, 0, 2, 3, // front
+                4, 5, 6, 4, 6, 7, // back
+                8, 9, 10, 8, 10, 11, // top
+                12, 13, 14, 12, 14, 15, // bottom
+                16, 17, 18, 16, 18, 19, // right
+                20, 21, 22, 20, 22, 23, // left
+            ],
+        )
+        .expect("fail to create cube")
+    }
+}
+
 // M stands for model space
 pub struct Mesh<V: Vertex, U: Uniform, M> {
     renderer: Arc<Renderer<V, U>>,
@@ -180,11 +254,11 @@ impl<V: Vertex, U: Uniform> Renderer<V, U> {
     }
 
     // M is the model space
-    pub fn create_mesh<M>(
-        self: &Arc<Self>,
-        vertex_data: Vec<V>,
-        index_data: Vec<u16>,
-    ) -> Result<Mesh<V, U, M>> {
+    pub fn create_mesh<M>(self: &Arc<Self>, data: MeshData<V>) -> Result<Mesh<V, U, M>> {
+        let MeshData {
+            vertices: vertex_data,
+            indices: index_data,
+        } = data;
         let (vertex_buffer, vertex_buffer_init) = ImmutableBuffer::from_iter(
             vertex_data.into_iter(),
             BufferUsage::vertex_buffer(),

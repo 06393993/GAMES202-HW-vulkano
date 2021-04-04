@@ -20,11 +20,19 @@ use super::{
     Camera, TriangleSpace, WorldSpace,
 };
 use crate::errors::*;
-use mesh_renderer::{Mesh, Renderer as MeshRenderer};
+use mesh_renderer::{Mesh, MeshData, Renderer as MeshRenderer, SimpleVertex};
 
 #[derive(Default, Copy, Clone)]
 struct Vertex {
-    position: [f32; 2],
+    position: [f32; 4],
+}
+
+impl SimpleVertex for Vertex {
+    fn create_from_position(x: f32, y: f32, z: f32) -> Self {
+        Vertex {
+            position: [x, y, z, 1.0],
+        }
+    }
 }
 
 vulkano::impl_vertex!(Vertex, position);
@@ -77,21 +85,9 @@ impl Renderer {
             MeshRenderer::init(device, &shaders, queue, format, width, height)
                 .chain_err(|| "fail to create mesh renderer")?,
         );
+        let mesh_data = MeshData::cube();
         let mesh = mesh_renderer
-            .create_mesh(vec![
-                Vertex {
-                    position: [-0.5, -0.5],
-                },
-                Vertex {
-                    position: [0.5, -0.5],
-                },
-                Vertex {
-                    position: [0.5, 0.5],
-                },
-                Vertex {
-                    position: [-0.5, 0.5]
-                },
-            ], vec![0, 1, 2, 2, 3, 0])
+            .create_mesh(mesh_data)
             .chain_err(|| "fail to create mesh")?;
         Ok(Self {
             mesh_renderer,
