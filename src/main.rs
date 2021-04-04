@@ -2,10 +2,15 @@
 
 mod scene;
 
-use std::time::{Duration, Instant};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use euclid::{approxeq::ApproxEq, point3, vec3, Angle, Point3D, Scale, Transform3D};
+use image::{io::Reader as ImageReader, DynamicImage};
 use imgui::*;
+use obj::{Obj, ObjData};
 use winit::event::VirtualKeyCode;
 #[macro_use]
 extern crate error_chain;
@@ -16,6 +21,18 @@ use scene::{
 
 mod errors {
     error_chain! {}
+
+    pub fn eprint_chained_err(e: &Error) {
+        eprintln!("error: {}", e);
+
+        for e in e.iter().skip(1) {
+            eprintln!("caused by: {}", e);
+        }
+
+        if let Some(backtrace) = e.backtrace() {
+            eprintln!("backtrace: {:?}", backtrace);
+        }
+    }
 }
 
 use errors::*;
@@ -382,15 +399,7 @@ mod support {
                 } => *control_flow = ControlFlow::Exit,
                 Event::LoopDestroyed => {
                     let exit_code = if let Err(ref e) = *res.lock().unwrap() {
-                        eprintln!("error: {}", e);
-
-                        for e in e.iter().skip(1) {
-                            eprintln!("caused by: {}", e);
-                        }
-
-                        if let Some(backtrace) = e.backtrace() {
-                            eprintln!("backtrace: {:?}", backtrace);
-                        }
+                        eprint_chained_err(e);
                         1
                     } else {
                         0
@@ -407,6 +416,43 @@ mod support {
     }
 }
 
+struct ModelAndTexture {
+    obj: ObjData,
+    texture: DynamicImage,
+}
+
+impl ModelAndTexture {
+    fn load(obj_path: &PathBuf, texture_path: &PathBuf) -> Result<Self> {
+        let obj = Obj::load(obj_path.as_path()).chain_err(|| "fail to load obj file")?;
+        let texture = ImageReader::open(texture_path.as_path())
+            .chain_err(|| format!("fail to open image file: {}", texture_path.display()))?
+            .decode()
+            .chain_err(|| "fail to decode the image")?;
+        Ok(Self {
+            obj: obj.data,
+            texture,
+        })
+    }
+}
+
+fn select_model_and_texture_files() -> Result<Option<ModelAndTexture>> {
+    let model_path =
+        tinyfiledialogs::open_file_dialog("select model file", "", Some((&["*.obj"], "")));
+    let model_path = if let Some(model_path) = model_path {
+        PathBuf::from(model_path)
+    } else {
+        return Ok(None);
+    };
+    let texture_path =
+        tinyfiledialogs::open_file_dialog("select texture file", "", Some((&["*.png"], "")));
+    let texture_path = if let Some(texture_path) = texture_path {
+        PathBuf::from(texture_path)
+    } else {
+        return Ok(None);
+    };
+    ModelAndTexture::load(&model_path, &texture_path).map(Some)
+}
+
 struct AppState {
     color_picker_visible: bool,
     color: [f32; 3],
@@ -414,6 +460,7 @@ struct AppState {
     camera: Option<Camera>,
     camera_speed: f32,
     triangle_transform: Transform3D<f32, TriangleSpace, WorldSpace>,
+    model_path: Option<String>,
 }
 
 impl Default for AppState {
@@ -425,6 +472,7 @@ impl Default for AppState {
             camera: None,
             camera_speed: 0.05,
             triangle_transform: Transform3D::from_scale(Scale::new(0.5)),
+            model_path: None,
         }
     }
 }
@@ -514,11 +562,6 @@ impl AppState {
         Window::new(im_str!("Hello world"))
             .size([300.0, 110.0], Condition::FirstUseEver)
             .build(ui, || {
-                let mouse_pos = ui.io().mouse_pos;
-                ui.text(format!(
-                    "Mouse Position: ({:.1},{:.1})",
-                    mouse_pos[0], mouse_pos[1]
-                ));
                 ui.text(format!("FPS {}", self.recent_frame_times.len()));
                 if ui.small_button(im_str!("togle color picker")) {
                     self.color_picker_visible = !self.color_picker_visible;
@@ -527,6 +570,17 @@ impl AppState {
                     "color = ({}, {}, {})",
                     self.color[0], self.color[1], self.color[2]
                 ));
+
+                if ui.small_button(im_str!("select model files")) {
+                    if let Err(ref e) = select_model_and_texture_files()
+                        .chain_err(|| "fail to load the model file or the texture file")
+                    {
+                        eprint_chained_err(e);
+                    }
+                }
+                if let Some(ref model_path) = self.model_path {
+                    ui.text(format!("model path: {}", model_path));
+                }
             });
         if self.color_picker_visible {
             let editable_color: EditableColor = (&mut self.color).into();
@@ -537,8 +591,10 @@ impl AppState {
 }
 
 fn main() {
-    // TODO: write a error handler to also catch errors here
-    run().unwrap()
+    if let Err(ref e) = run() {
+        eprint_chained_err(e);
+        std::process::exit(1);
+    }
 }
 
 fn run() -> Result<()> {
