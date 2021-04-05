@@ -9,7 +9,7 @@ use std::{
 };
 
 use euclid::{approxeq::ApproxEq, point3, vec3, Angle, Point3D, Scale, Transform3D};
-use image::{io::Reader as ImageReader, DynamicImage};
+use image::{io::Reader as ImageReader, RgbaImage};
 use imgui::*;
 use obj::{Obj, ObjData};
 use winit::event::VirtualKeyCode;
@@ -40,7 +40,7 @@ use errors::*;
 
 struct ModelAndTexture {
     obj: ObjData,
-    texture: DynamicImage,
+    texture: RgbaImage,
 }
 
 impl ModelAndTexture {
@@ -49,7 +49,8 @@ impl ModelAndTexture {
         let texture = ImageReader::open(texture_path.as_path())
             .chain_err(|| format!("fail to open image file: {}", texture_path.display()))?
             .decode()
-            .chain_err(|| "fail to decode the image")?;
+            .chain_err(|| "fail to decode the image")?
+            .to_rgba8();
         Ok(Self {
             obj: obj.data,
             texture,

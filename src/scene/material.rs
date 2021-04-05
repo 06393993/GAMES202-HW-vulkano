@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use image::DynamicImage;
+use image::RgbaImage;
 use vulkano::{
     buffer::BufferAccess,
     command_buffer::AutoCommandBufferBuilder,
@@ -17,7 +17,7 @@ use crate::errors::*;
 
 pub enum DescriptorSetBindingDesc {
     Buffer(Arc<dyn BufferAccess + Send + Sync>),
-    Image(Arc<DynamicImage>),
+    Image(Arc<RgbaImage>),
 }
 
 pub struct DescriptorSetBinding {

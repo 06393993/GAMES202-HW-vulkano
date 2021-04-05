@@ -17,9 +17,10 @@ use vulkano::{
         pipeline_layout::{PipelineLayout, PipelineLayoutAbstract},
     },
     device::{Device, Queue},
-    format::{ClearValue, Format},
+    format::{ClearValue, Format, R8G8B8A8Unorm},
     framebuffer::{Framebuffer, FramebufferAbstract, RenderPassAbstract, Subpass},
     image::traits::ImageViewAccess,
+    image::{immutable::ImmutableImage, Dimensions, MipmapsCount},
     pipeline::{
         vertex::Vertex as VertexT,
         viewport::{Scissor, Viewport},
@@ -261,31 +262,88 @@ impl<V: VertexT, M: Material> Renderer<V, M> {
             self.queue.clone(),
         )
         .chain_err(|| "fail to create index buffer")?;
-        vertex_buffer_init
-            .join(index_buffer_init)
-            .then_signal_fence_and_flush()
-            .chain_err(|| "fail to signal the fence and flush when initializing the vertex buffer and the index buffer")?
-            .wait(None)
-            .chain_err(|| "fail to wait for the vertex buffer and the index buffer being initialized")?;
+        let mut buffer_init = Some(vertex_buffer_init.join(index_buffer_init).boxed());
 
         let uniforms = material
             .create_uniforms(self.device.clone(), self.queue.clone())
             .chain_err(|| "fail to create uniforms")?;
-        let descriptor_sets: Result<Vec<_>> = uniforms.create_descriptor_bindings().into_iter().map(|binding| {
-            let DescriptorSetBinding { index, desc } = binding;
-            let layout = self.pipeline_layout.descriptor_set_layout(index).ok_or::<Error>(format!("can't find the descriptor at the index {}", index).into())?;
-            let descriptor_set_builder = PersistentDescriptorSet::start(layout.clone());
-            let descriptor_set_builder = match desc {
-                DescriptorSetBindingDesc::Buffer(buffer) => descriptor_set_builder.add_buffer(buffer).chain_err(|| format!("fail to add buffer to the descriptor set of the uniform, descriptor set index = {}", index))?,
-                DescriptorSetBindingDesc::Image(image) => {
-                    unimplemented!()
-                    // descriptor_set_builder.add_sampled_image(, Sampler::simple_repeat_linear(self.device.clone())).chain_err(|| format!("fail to add sampler to the descriptor set of the uniform, descriptor set index = {}", index))?
-                },
-            };
-            let descriptor_set = descriptor_set_builder.build().chain_err(|| format!("fail to create the descriptor set for the uniforms, descriptor set index = {}", index))?;
-            Ok(Arc::new(descriptor_set) as Arc<dyn DescriptorSet + Send + Sync + 'static>)
-        }).collect();
+        let descriptor_sets: Result<Vec<_>> = uniforms
+            .create_descriptor_bindings()
+            .into_iter()
+            .map(|binding| {
+                let DescriptorSetBinding { index, desc } = binding;
+                let layout = self
+                    .pipeline_layout
+                    .descriptor_set_layout(index)
+                    .ok_or::<Error>(
+                        format!("can't find the descriptor at the index {}", index,).into(),
+                    )?;
+                let descriptor_set_builder = PersistentDescriptorSet::start(layout.clone());
+                let err_message = format!(
+                    "fail to create the descriptor set for the uniforms, descriptor set index = {}",
+                    index
+                );
+                match desc {
+                    DescriptorSetBindingDesc::Buffer(buffer) => {
+                        let descriptor_set = descriptor_set_builder.add_buffer(buffer).chain_err(|| {
+                            format!(
+                                "fail to add buffer to the descriptor set of the uniform, \
+                                descriptor set index = {}",
+                                index
+                            )
+                        })?
+                        .build().chain_err(|| err_message)?;
+                        Ok(Arc::new(descriptor_set) as Arc<dyn DescriptorSet + Send + Sync + 'static>)
+                    }
+                    DescriptorSetBindingDesc::Image(image) => {
+                        let (image, image_init) = ImmutableImage::from_iter(
+                            image.pixels().map(|p| p.0),
+                            Dimensions::Dim2d {
+                                width: image.width(),
+                                height: image.height(),
+                            },
+                            MipmapsCount::One,
+                            R8G8B8A8Unorm,
+                            self.queue.clone(),
+                        )
+                        .chain_err(|| {
+                            format!(
+                                "fail to create image for image type descriptor, descriptor set \
+                                index = {}",
+                                index
+                            )
+                        })?;
+                        buffer_init = Some(buffer_init.take().unwrap().join(image_init).boxed());
+                        let descriptor_set = descriptor_set_builder
+                            .add_sampled_image(
+                                image,
+                                Sampler::simple_repeat_linear(self.device.clone()),
+                            )
+                            .chain_err(|| {
+                                format!(
+                                    "fail to add sampler to the descriptor set of the uniform, \
+                                    descriptor set index = {}",
+                                    index
+                                )
+                            })?
+                            .build().chain_err(|| err_message)?;
+                        Ok(Arc::new(descriptor_set) as Arc<dyn DescriptorSet + Send + Sync + 'static>)
+                    }
+                }
+            })
+            .collect();
         let descriptor_sets = descriptor_sets?;
+        buffer_init
+            .unwrap()
+            .then_signal_fence_and_flush()
+            .chain_err(|| {
+                "fail to signal the fence and flush when initializing the vertex buffer and the \
+                index buffer"
+            })?
+            .wait(None)
+            .chain_err(|| {
+                "fail to wait for the vertex buffer and the index buffer being initialized"
+            })?;
         Ok(Mesh {
             renderer: self.clone(),
             vertex_buffer,
