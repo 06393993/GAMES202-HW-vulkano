@@ -9,15 +9,14 @@ use std::{
 };
 
 use euclid::{approxeq::ApproxEq, point3, vec3, Angle, Point3D, Scale, Transform3D};
-use image::{io::Reader as ImageReader, RgbaImage};
 use imgui::*;
-use obj::{Obj, ObjData};
 use winit::event::VirtualKeyCode;
 #[macro_use]
 extern crate error_chain;
 
 use scene::{
-    Camera, CameraControl, CameraDirection, State as SceneState, TriangleSpace, WorldSpace,
+    Camera, CameraControl, CameraDirection, ModelAndTexture, Renderer as SceneRenderer,
+    State as SceneState, TriangleSpace, WorldSpace,
 };
 
 mod errors {
@@ -27,7 +26,7 @@ mod errors {
         eprintln!("error: {}", e);
 
         for e in e.iter().skip(1) {
-            eprintln!("caused by: {}", e);
+            eprintln!("caused by: {:?}", e);
         }
 
         if let Some(backtrace) = e.backtrace() {
@@ -37,26 +36,6 @@ mod errors {
 }
 
 use errors::*;
-
-struct ModelAndTexture {
-    obj: ObjData,
-    texture: RgbaImage,
-}
-
-impl ModelAndTexture {
-    fn load(obj_path: &PathBuf, texture_path: &PathBuf) -> Result<Self> {
-        let obj = Obj::load(obj_path.as_path()).chain_err(|| "fail to load obj file")?;
-        let texture = ImageReader::open(texture_path.as_path())
-            .chain_err(|| format!("fail to open image file: {}", texture_path.display()))?
-            .decode()
-            .chain_err(|| "fail to decode the image")?
-            .to_rgba8();
-        Ok(Self {
-            obj: obj.data,
-            texture,
-        })
-    }
-}
 
 fn select_model_and_texture_files() -> Result<Option<ModelAndTexture>> {
     let model_path =
@@ -124,8 +103,8 @@ impl AppState {
     fn update_camera(&mut self, ui: &mut imgui::Ui) -> Result<()> {
         let aspect_ratio = (ui.io().display_size[0] as f32) / (ui.io().display_size[1] as f32);
         let fov = Angle::pi() / 4.0;
-        let near = 0.1;
-        let far = 10.0;
+        let near = 1.0;
+        let far = 100.0;
         let up = vec3(0.0, 1.0, 0.0);
         let camera = match self.camera.take() {
             Some(camera) if !camera.get_aspect_ratio().approx_eq(&aspect_ratio) => {
@@ -181,7 +160,7 @@ impl AppState {
                 .then_rotate(0.0, 1.0, 0.0, speed * delta_time.as_secs_f32());
     }
 
-    fn update_ui(&mut self, ui: &mut Ui) {
+    fn update_ui(&mut self, ui: &mut Ui, scene_renderer: &mut SceneRenderer) {
         Window::new(im_str!("Hello world"))
             .size([300.0, 110.0], Condition::FirstUseEver)
             .build(ui, || {
@@ -195,10 +174,18 @@ impl AppState {
                 ));
 
                 if ui.small_button(im_str!("select model files")) {
-                    if let Err(ref e) = select_model_and_texture_files()
-                        .chain_err(|| "fail to load the model file or the texture file")
-                    {
-                        eprint_chained_err(e);
+                    let res = select_model_and_texture_files()
+                        .chain_err(|| "fail to load the model file or the texture file");
+                    match res {
+                        Ok(Some(model_and_texture)) => {
+                            if let Err(ref e) =
+                                scene_renderer.load_model_and_texture(model_and_texture)
+                            {
+                                eprint_chained_err(e);
+                            }
+                        }
+                        Ok(None) => { /* do nothing, the user cancel the operation */ }
+                        Err(ref e) => eprint_chained_err(e),
                     }
                 }
                 if let Some(ref model_path) = self.model_path {
@@ -223,13 +210,13 @@ fn main() {
 fn run() -> Result<()> {
     let system = support::init(file!())?;
 
-    system.main_loop(move |_, ui, mut app_state: AppState| {
+    system.main_loop(move |_, ui, scene_renderer, mut app_state: AppState| {
         let now = Instant::now();
         app_state.recent_frame_times.push(now);
         app_state
             .recent_frame_times
             .retain(|frame_time| now.duration_since(*frame_time) < Duration::from_secs(1));
-        app_state.update_ui(ui);
+        app_state.update_ui(ui, scene_renderer);
         app_state
             .update_camera(ui)
             .chain_err(|| "fail to update camera in main loop")?;

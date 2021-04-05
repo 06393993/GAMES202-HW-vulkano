@@ -205,7 +205,7 @@ pub fn init(title: &str) -> Result<System> {
 
 impl System {
     pub fn main_loop<
-        F: 'static + FnMut(&mut bool, &mut Ui, T) -> Result<T>,
+        F: 'static + FnMut(&mut bool, &mut Ui, &mut SceneRenderer, T) -> Result<T>,
         T: 'static + AppStateT,
     >(
         self,
@@ -221,7 +221,7 @@ impl System {
             mut imgui,
             mut platform,
             mut ui_renderer,
-            scene_renderer,
+            mut scene_renderer,
             ..
         } = self;
 
@@ -263,7 +263,12 @@ impl System {
                 let mut ui = imgui.frame();
 
                 let mut run = true;
-                let app_state = match run_ui(&mut run, &mut ui, prev_app_state.take().unwrap()) {
+                let app_state = match run_ui(
+                    &mut run,
+                    &mut ui,
+                    &mut scene_renderer,
+                    prev_app_state.take().unwrap(),
+                ) {
                     Ok(app_state) => app_state,
                     Err(e) => {
                         *control_flow = ControlFlow::Exit;

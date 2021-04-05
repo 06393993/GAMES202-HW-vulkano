@@ -1,6 +1,7 @@
 mod camera;
 mod light;
 mod material;
+mod object;
 mod renderer;
 mod shaders;
 
@@ -10,4 +11,4 @@ pub struct NDCSpace;
 pub struct ViewSpace;
 pub struct WorldSpace;
 pub struct TriangleSpace;
-pub use renderer::{Renderer, State};
+pub use renderer::{ModelAndTexture, Renderer, State};

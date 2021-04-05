@@ -1,4 +1,5 @@
 pub mod light;
+pub mod phong;
 
 use std::sync::Arc;
 

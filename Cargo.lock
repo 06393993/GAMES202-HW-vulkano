@@ -12,6 +12,7 @@ dependencies = [
  "imgui-vulkano-renderer",
  "imgui-winit-support",
  "obj",
+ "ordered-float",
  "tinyfiledialogs",
  "vulkano",
  "vulkano-shaders",
@@ -1117,6 +1118,15 @@ name = "once_cell"
 version = "1.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af8b08b04175473088b46763e51ee54da5f9a164bc162f615b91bc179dbf15a3"
+
+[[package]]
+name = "ordered-float"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "766f840da25490628d8e63e529cd21c014f6600c6b8517add12a6fa6167a6218"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "owned_ttf_parser"

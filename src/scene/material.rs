@@ -5,25 +5,14 @@
 
 use std::sync::Arc;
 
-use image::RgbaImage;
 use vulkano::{
-    buffer::BufferAccess,
     command_buffer::AutoCommandBufferBuilder,
+    descriptor::{descriptor_set::DescriptorSet, pipeline_layout::PipelineLayoutAbstract},
     device::{Device, Queue},
 };
 
 use super::{shaders::ShadersT, Camera};
 use crate::errors::*;
-
-pub enum DescriptorSetBindingDesc {
-    Buffer(Arc<dyn BufferAccess + Send + Sync>),
-    Image(Arc<RgbaImage>),
-}
-
-pub struct DescriptorSetBinding {
-    pub index: usize,
-    pub desc: DescriptorSetBindingDesc,
-}
 
 pub trait UniformsT: Sized + Send + Sync + 'static {
     fn set_model_matrix(&mut self, mat: [f32; 16]);
@@ -36,7 +25,10 @@ pub trait UniformsT: Sized + Send + Sync + 'static {
     }
 
     fn update_buffers<P>(&self, cmd_buf_builder: &mut AutoCommandBufferBuilder<P>) -> Result<()>;
-    fn create_descriptor_bindings(&self) -> Vec<DescriptorSetBinding>;
+    fn create_descriptor_sets(
+        &self,
+        pipeline_layout: &dyn PipelineLayoutAbstract,
+    ) -> Result<Vec<Arc<dyn DescriptorSet + Send + Sync + 'static>>>;
 }
 
 pub trait Material {

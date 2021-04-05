@@ -8,11 +8,15 @@ use std::sync::Arc;
 use vulkano::{
     buffer::{device_local::DeviceLocalBuffer, BufferUsage},
     command_buffer::AutoCommandBufferBuilder,
+    descriptor::{
+        descriptor_set::{DescriptorSet, PersistentDescriptorSet},
+        pipeline_layout::PipelineLayoutAbstract,
+    },
     device::{Device, Queue},
 };
 
 use super::{
-    material::{DescriptorSetBinding, DescriptorSetBindingDesc, Material, UniformsT},
+    material::{Material, UniformsT},
     renderer::{Mesh, MeshData, MeshRenderer, SimpleVertex},
     shaders::light::Shaders as EmissiveShaders,
 };
@@ -53,11 +57,23 @@ impl UniformsT for EmissiveUniforms {
         Ok(())
     }
 
-    fn create_descriptor_bindings(&self) -> Vec<DescriptorSetBinding> {
-        vec![DescriptorSetBinding {
-            index: 0,
-            desc: DescriptorSetBindingDesc::Buffer(self.buffer.clone()),
-        }]
+    fn create_descriptor_sets(
+        &self,
+        pipeline_layout: &dyn PipelineLayoutAbstract,
+    ) -> Result<Vec<Arc<dyn DescriptorSet + Send + Sync + 'static>>> {
+        let layout = pipeline_layout
+            .descriptor_set_layout(0)
+            .ok_or::<Error>("can't find the descriptor set at the index 0".into())?;
+        let descriptor_set = Arc::new(
+            PersistentDescriptorSet::start(layout.clone())
+                .add_buffer(self.buffer.clone())
+                .chain_err(|| {
+                    "fail to add buffer to the descriptor set for the light uniform, binding = 0"
+                })?
+                .build()
+                .chain_err(|| "fail to create the descriptor set for the light uniform")?,
+        );
+        Ok(vec![descriptor_set])
     }
 }
 
@@ -111,6 +127,8 @@ pub struct PointLightVertex {
     position: [f32; 4],
 }
 
+vulkano::impl_vertex!(PointLightVertex, position);
+
 impl SimpleVertex for PointLightVertex {
     fn create_from_position(x: f32, y: f32, z: f32) -> Self {
         PointLightVertex {
@@ -118,8 +136,6 @@ impl SimpleVertex for PointLightVertex {
         }
     }
 }
-
-vulkano::impl_vertex!(PointLightVertex, position);
 
 pub type PointLightRenderer = MeshRenderer<PointLightVertex, EmissiveMaterial>;
 

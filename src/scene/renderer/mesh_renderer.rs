@@ -5,10 +5,11 @@
 
 use std::{
     marker::PhantomData,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use euclid::Transform3D;
+use image::RgbaImage;
 use vulkano::{
     buffer::{immutable::ImmutableBuffer, BufferAccess, BufferUsage},
     command_buffer::{AutoCommandBufferBuilder, DynamicState, SubpassContents},
@@ -30,13 +31,7 @@ use vulkano::{
     sync::GpuFuture,
 };
 
-use super::{
-    super::{
-        material::{DescriptorSetBinding, DescriptorSetBindingDesc},
-        shaders::ShadersT,
-    },
-    Camera, Material, UniformsT, WorldSpace,
-};
+use super::{super::shaders::ShadersT, Camera, Material, UniformsT, WorldSpace};
 use crate::errors::*;
 
 pub trait SimpleVertex: VertexT {
@@ -162,6 +157,12 @@ impl<V: VertexT, M: Material, S> Mesh<V, M, S> {
             .chain_err(|| "fail to add the end renderpass command to the command builder")?;
         Ok(())
     }
+
+    pub fn uniforms_lock(&self) -> MutexGuard<M::Uniforms> {
+        self.uniforms
+            .lock()
+            .expect("fail to grab the lock for uniforms")
+    }
 }
 
 pub struct Renderer<V: VertexT, M: Material> {
@@ -218,6 +219,7 @@ impl<V: VertexT, M: Material> Renderer<V, M> {
                     )]
                     .into_iter(),
                 )
+                .cull_mode_disabled()
                 .fragment_shader(shaders.fragment_shader_main_entry_point(), ())
                 .render_pass(
                     Subpass::from(render_pass.clone(), 0)
@@ -262,79 +264,8 @@ impl<V: VertexT, M: Material> Renderer<V, M> {
             self.queue.clone(),
         )
         .chain_err(|| "fail to create index buffer")?;
-        let mut buffer_init = Some(vertex_buffer_init.join(index_buffer_init).boxed());
-
-        let uniforms = material
-            .create_uniforms(self.device.clone(), self.queue.clone())
-            .chain_err(|| "fail to create uniforms")?;
-        let descriptor_sets: Result<Vec<_>> = uniforms
-            .create_descriptor_bindings()
-            .into_iter()
-            .map(|binding| {
-                let DescriptorSetBinding { index, desc } = binding;
-                let layout = self
-                    .pipeline_layout
-                    .descriptor_set_layout(index)
-                    .ok_or::<Error>(
-                        format!("can't find the descriptor at the index {}", index,).into(),
-                    )?;
-                let descriptor_set_builder = PersistentDescriptorSet::start(layout.clone());
-                let err_message = format!(
-                    "fail to create the descriptor set for the uniforms, descriptor set index = {}",
-                    index
-                );
-                match desc {
-                    DescriptorSetBindingDesc::Buffer(buffer) => {
-                        let descriptor_set = descriptor_set_builder.add_buffer(buffer).chain_err(|| {
-                            format!(
-                                "fail to add buffer to the descriptor set of the uniform, \
-                                descriptor set index = {}",
-                                index
-                            )
-                        })?
-                        .build().chain_err(|| err_message)?;
-                        Ok(Arc::new(descriptor_set) as Arc<dyn DescriptorSet + Send + Sync + 'static>)
-                    }
-                    DescriptorSetBindingDesc::Image(image) => {
-                        let (image, image_init) = ImmutableImage::from_iter(
-                            image.pixels().map(|p| p.0),
-                            Dimensions::Dim2d {
-                                width: image.width(),
-                                height: image.height(),
-                            },
-                            MipmapsCount::One,
-                            R8G8B8A8Unorm,
-                            self.queue.clone(),
-                        )
-                        .chain_err(|| {
-                            format!(
-                                "fail to create image for image type descriptor, descriptor set \
-                                index = {}",
-                                index
-                            )
-                        })?;
-                        buffer_init = Some(buffer_init.take().unwrap().join(image_init).boxed());
-                        let descriptor_set = descriptor_set_builder
-                            .add_sampled_image(
-                                image,
-                                Sampler::simple_repeat_linear(self.device.clone()),
-                            )
-                            .chain_err(|| {
-                                format!(
-                                    "fail to add sampler to the descriptor set of the uniform, \
-                                    descriptor set index = {}",
-                                    index
-                                )
-                            })?
-                            .build().chain_err(|| err_message)?;
-                        Ok(Arc::new(descriptor_set) as Arc<dyn DescriptorSet + Send + Sync + 'static>)
-                    }
-                }
-            })
-            .collect();
-        let descriptor_sets = descriptor_sets?;
-        buffer_init
-            .unwrap()
+        vertex_buffer_init
+            .join(index_buffer_init)
             .then_signal_fence_and_flush()
             .chain_err(|| {
                 "fail to signal the fence and flush when initializing the vertex buffer and the \
@@ -344,6 +275,13 @@ impl<V: VertexT, M: Material> Renderer<V, M> {
             .chain_err(|| {
                 "fail to wait for the vertex buffer and the index buffer being initialized"
             })?;
+
+        let uniforms = material
+            .create_uniforms(self.device.clone(), self.queue.clone())
+            .chain_err(|| "fail to create uniforms")?;
+        let descriptor_sets = uniforms
+            .create_descriptor_sets(self.pipeline_layout.as_ref())
+            .chain_err(|| "fail to create descriptor sets for uniforms")?;
         Ok(Mesh {
             renderer: self.clone(),
             vertex_buffer,
@@ -365,5 +303,13 @@ impl<V: VertexT, M: Material> Renderer<V, M> {
                 .build()
                 .chain_err(|| "fail to create the framebuffer to draw on")?,
         ))
+    }
+
+    pub fn get_device(&self) -> Arc<Device> {
+        self.device.clone()
+    }
+
+    pub fn get_queue(&self) -> Arc<Queue> {
+        self.queue.clone()
     }
 }
