@@ -9,25 +9,21 @@ use std::{
 };
 
 use euclid::Transform3D;
-use image::RgbaImage;
 use vulkano::{
     buffer::{immutable::ImmutableBuffer, BufferAccess, BufferUsage},
-    command_buffer::{AutoCommandBufferBuilder, DynamicState, SubpassContents},
+    command_buffer::{AutoCommandBufferBuilder, DynamicState},
     descriptor::{
-        descriptor_set::{DescriptorSet, PersistentDescriptorSet},
+        descriptor_set::DescriptorSet,
         pipeline_layout::{PipelineLayout, PipelineLayoutAbstract},
     },
     device::{Device, Queue},
-    format::{ClearValue, Format, R8G8B8A8Unorm},
-    framebuffer::{Framebuffer, FramebufferAbstract, RenderPassAbstract, Subpass},
-    image::traits::ImageViewAccess,
-    image::{immutable::ImmutableImage, Dimensions, MipmapsCount},
+    framebuffer::{RenderPassAbstract, Subpass},
     pipeline::{
+        depth_stencil::DepthStencil,
         vertex::Vertex as VertexT,
         viewport::{Scissor, Viewport},
         GraphicsPipeline, GraphicsPipelineAbstract,
     },
-    sampler::Sampler,
     sync::GpuFuture,
 };
 
@@ -119,31 +115,29 @@ pub struct Mesh<V: VertexT, M: Material, S> {
 }
 
 impl<V: VertexT, M: Material, S> Mesh<V, M, S> {
-    pub fn draw_commands<P>(
+    pub fn prepare_draw_commands<P>(
         &self,
         cmd_buf_builder: &mut AutoCommandBufferBuilder<P>,
-        framebuffer: Arc<dyn FramebufferAbstract + Send + Sync>,
         model_transform: &Transform3D<f32, S, WorldSpace>,
         camera: &Camera,
     ) -> Result<()> {
-        {
-            let mut uniforms = self
-                .uniforms
-                .lock()
-                .expect("fail to grab the lock of uniforms");
-            uniforms.set_model_matrix(model_transform.to_array());
-            uniforms.set_view_proj_matrix_from_camera(camera);
-            uniforms.update_buffers(cmd_buf_builder).chain_err(|| {
-                "fail to add the update buffer for uniforms command to the command builder"
-            })?;
-        }
+        let mut uniforms = self
+            .uniforms
+            .lock()
+            .expect("fail to grab the lock of uniforms");
+        uniforms.set_model_matrix(model_transform.to_array());
+        uniforms.set_view_proj_matrix_from_camera(camera);
+        uniforms.update_buffers(cmd_buf_builder).chain_err(|| {
+            "fail to add the update buffer for uniforms command to the command builder"
+        })?;
+        Ok(())
+    }
+
+    pub fn draw_commands<P>(
+        &self,
+        cmd_buf_builder: &mut AutoCommandBufferBuilder<P>,
+    ) -> Result<()> {
         cmd_buf_builder
-            .begin_render_pass(
-                framebuffer.clone(),
-                SubpassContents::Inline,
-                vec![ClearValue::None],
-            )
-            .chain_err(|| "fail to add the begin renderpass command to the command builder")?
             .draw_indexed(
                 self.renderer.pipeline.clone(),
                 &DynamicState::none(),
@@ -152,9 +146,7 @@ impl<V: VertexT, M: Material, S> Mesh<V, M, S> {
                 self.descriptor_sets.iter().cloned().collect::<Vec<_>>(),
                 (),
             )
-            .chain_err(|| "fail to add the draw command to the command builder")?
-            .end_render_pass()
-            .chain_err(|| "fail to add the end renderpass command to the command builder")?;
+            .chain_err(|| "fail to add the draw command to the command builder")?;
         Ok(())
     }
 
@@ -168,7 +160,6 @@ impl<V: VertexT, M: Material, S> Mesh<V, M, S> {
 pub struct Renderer<V: VertexT, M: Material> {
     device: Arc<Device>,
     queue: Arc<Queue>,
-    render_pass: Arc<dyn RenderPassAbstract + Send + Sync>,
     pipeline: Arc<dyn GraphicsPipelineAbstract + Send + Sync>,
     pipeline_layout: Box<dyn PipelineLayoutAbstract>,
     phantom: PhantomData<(V, M)>,
@@ -178,29 +169,11 @@ impl<V: VertexT, M: Material> Renderer<V, M> {
     pub fn init(
         device: Arc<Device>,
         queue: Arc<Queue>,
-        format: Format,
+        subpass: Subpass<impl RenderPassAbstract + Send + Sync + 'static>,
         width: u32,
         height: u32,
     ) -> Result<Self> {
         let shaders = M::Shaders::load(device.clone()).chain_err(|| "fail to load shaders")?;
-        let render_pass = Arc::new(
-            vulkano::single_pass_renderpass!(
-                device.clone(),
-                attachments: {
-                    color: {
-                        load: DontCare,
-                        store: Store,
-                        format: format,
-                        samples: 1,
-                    }
-                },
-                pass: {
-                    color: [color],
-                    depth_stencil: {}
-                }
-            )
-            .chain_err(|| "fail to create render pass when initializing renderer")?,
-        );
         let pipeline = Arc::new(
             GraphicsPipeline::start()
                 .vertex_input_single_buffer::<V>()
@@ -219,12 +192,10 @@ impl<V: VertexT, M: Material> Renderer<V, M> {
                     )]
                     .into_iter(),
                 )
-                .cull_mode_disabled()
                 .fragment_shader(shaders.fragment_shader_main_entry_point(), ())
-                .render_pass(
-                    Subpass::from(render_pass.clone(), 0)
-                        .expect("fail to retrieve the first subpass from the renderpass"),
-                )
+                .depth_stencil(DepthStencil::simple_depth_test())
+                .depth_write(true)
+                .render_pass(subpass)
                 .build(device.clone())
                 .chain_err(|| "fail to create graphics pipeline")?,
         );
@@ -235,7 +206,6 @@ impl<V: VertexT, M: Material> Renderer<V, M> {
         Ok(Self {
             device,
             queue,
-            render_pass,
             pipeline,
             pipeline_layout,
             phantom: PhantomData,
@@ -290,19 +260,6 @@ impl<V: VertexT, M: Material> Renderer<V, M> {
             uniforms: Arc::new(Mutex::new(uniforms)),
             phantom: PhantomData,
         })
-    }
-
-    pub fn create_framebuffer(
-        &self,
-        image: Arc<impl ImageViewAccess + Send + Sync + 'static>,
-    ) -> Result<Arc<dyn FramebufferAbstract + Sync + Send>> {
-        Ok(Arc::new(
-            Framebuffer::start(self.render_pass.clone())
-                .add(image.clone())
-                .chain_err(|| "fail to add the image to the framebuffer")?
-                .build()
-                .chain_err(|| "fail to create the framebuffer to draw on")?,
-        ))
     }
 
     pub fn get_device(&self) -> Arc<Device> {

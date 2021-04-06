@@ -11,10 +11,11 @@ use euclid::Transform3D;
 use image::{io::Reader as ImageReader, RgbaImage};
 use obj::{Obj, ObjData};
 use vulkano::{
-    command_buffer::AutoCommandBufferBuilder,
+    command_buffer::{AutoCommandBufferBuilder, SubpassContents},
     device::{Device, Queue},
-    format::Format,
-    image::traits::ImageViewAccess,
+    format::{ClearValue, D16Unorm, Format},
+    framebuffer::{Framebuffer, RenderPassAbstract, Subpass},
+    image::{attachment::AttachmentImage, traits::ImageViewAccess},
 };
 
 use super::{
@@ -54,10 +55,11 @@ pub struct State {
 }
 
 pub struct Renderer {
-    point_light_renderer: Arc<PointLightRenderer>,
     point_light: PointLight<TriangleSpace>,
     object_renderer: Arc<ObjectRenderer>,
     objects: Vec<Object<TriangleSpace>>,
+    depth_buffer: Arc<AttachmentImage<D16Unorm>>,
+    render_pass: Arc<dyn RenderPassAbstract + Send + Sync>,
 }
 
 impl Renderer {
@@ -68,28 +70,75 @@ impl Renderer {
         width: u32,
         height: u32,
     ) -> Result<Self> {
+        let depth_format = Format::D16Unorm;
+        let render_pass = Arc::new(
+            vulkano::single_pass_renderpass!(
+                device.clone(),
+                attachments: {
+                    color: {
+                        load: DontCare,
+                        store: Store,
+                        format: format,
+                        samples: 1,
+                    },
+                    depth: {
+                        load: Clear,
+                        store: Store,
+                        format: depth_format,
+                        samples: 1,
+                    }
+                },
+                pass: {
+                    color: [color],
+                    depth_stencil: {depth}
+                }
+            )
+            .chain_err(|| "fail to create render pass when initializing renderer")?,
+        );
+        let subpass = Subpass::from(render_pass.clone(), 0)
+            .expect("fail to retrieve the first subpass from the renderpass");
         let point_light_renderer = Arc::new(
-            MeshRenderer::init(device.clone(), queue.clone(), format, width, height)
-                .chain_err(|| "fail to create mesh renderer")?,
+            MeshRenderer::init(
+                device.clone(),
+                queue.clone(),
+                subpass.clone(),
+                width,
+                height,
+            )
+            .chain_err(|| "fail to create point light renderer")?,
         );
         let point_light = PointLight::new(point_light_renderer.clone(), 1.0, [1.0, 0.0, 0.0])
             .chain_err(|| "fail to create point light")?;
         let object_renderer = Arc::new(
-            ObjectRenderer::init(device, queue, format, width, height)
-                .chain_err(|| "fail to create object renderer")?,
+            ObjectRenderer::init(
+                device.clone(),
+                queue.clone(),
+                subpass.clone(),
+                width,
+                height,
+            )
+            .chain_err(|| "fail to create object renderer")?,
         );
+        let depth_buffer = AttachmentImage::new(device.clone(), [width, height], D16Unorm)
+            .chain_err(|| "fail to create the image for the depth attachment")?;
         Ok(Self {
-            point_light_renderer,
             point_light,
             object_renderer,
             objects: vec![],
+            depth_buffer,
+            render_pass,
         })
     }
 
     pub fn load_model_and_texture(&mut self, model_and_texture: ModelAndTexture) -> Result<()> {
         let position = &model_and_texture.obj.position;
         let normal = &model_and_texture.obj.normal;
-        let texture_coord = &model_and_texture.obj.texture;
+        let texture_coord = model_and_texture
+            .obj
+            .texture
+            .iter()
+            .map(|[u, v]| [*u, 1.0 - *v])
+            .collect();
         let material = Arc::new(
             ObjectMaterial::new(
                 self.object_renderer.as_ref(),
@@ -105,7 +154,7 @@ impl Renderer {
                     Object::new(
                         self.object_renderer.clone(),
                         position,
-                        texture_coord,
+                        &texture_coord,
                         normal,
                         group,
                         material.clone(),
@@ -123,30 +172,45 @@ impl Renderer {
         image: Arc<impl ImageViewAccess + Send + Sync + 'static>,
         state: &State,
     ) -> Result<()> {
-        let framebuffer = self
-            .point_light_renderer
-            .create_framebuffer(image)
-            .chain_err(|| "fail to create framebuffer for light")?;
+        let framebuffer = Arc::new(
+            Framebuffer::start(self.render_pass.clone())
+                .add(image.clone())
+                .chain_err(|| "fail to add the color attachment to the framebuffer")?
+                .add(self.depth_buffer.clone())
+                .chain_err(|| "fail to add the depth attachment to the framebuffer")?
+                .build()
+                .chain_err(|| "fail to create the framebuffer to draw on")?,
+        );
         self.point_light
             .mesh
-            .draw_commands(
-                cmd_buf_builder,
+            .prepare_draw_commands(cmd_buf_builder, &state.model_transform, &state.camera)
+            .chain_err(|| "fail to issue commands to prepare drawing for the point light mesh")?;
+        for object in self.objects.iter() {
+            object
+                .mesh
+                .prepare_draw_commands(cmd_buf_builder, &state.model_transform, &state.camera)
+                .chain_err(|| "fail to issue commands to prepare drawing for the object mesh")?;
+        }
+        cmd_buf_builder
+            .begin_render_pass(
                 framebuffer.clone(),
-                &state.model_transform,
-                &state.camera,
+                SubpassContents::Inline,
+                vec![ClearValue::None, ClearValue::Depth(1.0)],
             )
+            .chain_err(|| "fail to add the begin renderpass command to the command builder")?;
+        self.point_light
+            .mesh
+            .draw_commands(cmd_buf_builder)
             .chain_err(|| "fail to issue draw commands for the point light mesh")?;
         for object in self.objects.iter() {
             object
                 .mesh
-                .draw_commands(
-                    cmd_buf_builder,
-                    framebuffer.clone(),
-                    &state.model_transform,
-                    &state.camera,
-                )
+                .draw_commands(cmd_buf_builder)
                 .chain_err(|| "fail to issue draw commands for the object mesh")?;
         }
+        cmd_buf_builder
+            .end_render_pass()
+            .chain_err(|| "fail to add the end renderpass command to the command builder")?;
         Ok(())
     }
 }

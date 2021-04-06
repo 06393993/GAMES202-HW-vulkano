@@ -26,7 +26,7 @@ mod errors {
         eprintln!("error: {}", e);
 
         for e in e.iter().skip(1) {
-            eprintln!("caused by: {:?}", e);
+            eprintln!("caused by: {}", e);
         }
 
         if let Some(backtrace) = e.backtrace() {
