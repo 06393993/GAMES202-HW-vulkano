@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use euclid::{approxeq::ApproxEq, vec3, Angle, Point3D, Transform3D, Vector3D};
+use euclid::{approxeq::ApproxEq, point3, vec3, Angle, Point2D, Point3D, Transform3D, Vector3D};
 
 use super::{NDCSpace, ViewSpace, WorldSpace};
 use crate::errors::*;
@@ -142,6 +142,7 @@ impl Camera {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum Direction {
     Up,
     Down,
@@ -152,13 +153,15 @@ pub enum Direction {
 }
 
 pub trait CameraControl {
-    fn get_camera_mut(&mut self) -> &mut Camera;
+    fn get_camera_mut(&mut self) -> Result<&mut Camera>;
     // unit per second
     fn get_speed(&self) -> f32;
 
-    fn move_camera(&mut self, direction: Direction, time_elapsed: Duration) {
+    fn move_camera(&mut self, direction: Direction, time_elapsed: Duration) -> Result<()> {
         let speed = self.get_speed();
-        let camera = self.get_camera_mut();
+        let camera = self
+            .get_camera_mut()
+            .chain_err(|| "fail to retrieve the camera")?;
         let pos = camera.get_position();
         let sign = match direction {
             Direction::Backward | Direction::Up | Direction::Right => 1.0,
@@ -173,13 +176,38 @@ pub trait CameraControl {
         let direction = view_transform_inverse.transform_vector3d(direction) * sign;
         let dist = speed * time_elapsed.as_secs_f32();
         camera.set_position(&(pos + direction * dist));
+        Ok(())
+    }
+
+    // the parameter is the target normalized camera direction projected on the x-y plane of the
+    // view space
+    fn rotate_camera_to(&mut self, projected_target: Point2D<f32, ViewSpace>) -> Result<()> {
+        let projected_target = projected_target.to_vector();
+        if projected_target.length() > 1.0 {
+            return Err("the projected target is outside the unit circle".into());
+        }
+        let z = -(1.0 - projected_target.length()).sqrt();
+        assert!(!z.is_nan());
+        let target: Point3D<_, ViewSpace> = point3(projected_target.x, projected_target.y, z);
+        let camera = self
+            .get_camera_mut()
+            .chain_err(|| "fail to retrieve camera")?;
+        let target = camera
+            .get_view_transform()
+            .inverse()
+            .expect("the inverse of the view transform should always exist")
+            .transform_point3d(target)
+            .expect("the inverse of the view transform should always make sense");
+        camera
+            .look_at(&target)
+            .chain_err(|| format!("fail to set the camera look at target to {:?}", target))?;
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use euclid::{point3, vec3};
 
     #[test]
     fn test_projection_transform() {

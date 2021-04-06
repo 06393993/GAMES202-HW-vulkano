@@ -21,10 +21,12 @@ use vulkano::sync;
 use vulkano::sync::{FlushError, GpuFuture};
 
 use vulkano_win::VkSurfaceBuild;
-use winit::event::{Event, WindowEvent};
+use winit::event::{DeviceEvent, ElementState, Event, MouseButton, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{Window, WindowBuilder};
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use imgui_vulkano_renderer::Renderer as UiRenderer;
@@ -54,8 +56,18 @@ mod clipboard {
     }
 }
 
-pub trait AppStateT: Default {
-    fn get_scene_state(&self) -> SceneState;
+pub trait ApplicationT {
+    fn new(surface: Arc<Surface<Window>>, scene_renderer: Rc<RefCell<SceneRenderer>>) -> Self;
+    fn get_scene_state(&mut self) -> Result<SceneState>;
+    fn update_ui(&mut self, _ui: &mut Ui) -> Result<()> {
+        Ok(())
+    }
+    fn on_mouse_move(&mut self, _delta: (f64, f64)) -> Result<()> {
+        Ok(())
+    }
+    fn on_mouse_button(&mut self, _button: MouseButton, _state: ElementState) -> Result<()> {
+        Ok(())
+    }
 }
 
 pub struct System {
@@ -69,7 +81,7 @@ pub struct System {
     pub platform: WinitPlatform,
     pub ui_renderer: UiRenderer,
     pub font_size: f32,
-    pub scene_renderer: SceneRenderer,
+    pub scene_renderer: Rc<RefCell<SceneRenderer>>,
 }
 
 pub fn init(title: &str) -> Result<System> {
@@ -179,14 +191,16 @@ pub fn init(title: &str) -> Result<System> {
     let ui_renderer = UiRenderer::init(&mut imgui, device.clone(), queue.clone(), format)
         .expect("Failed to initialize UI renderer");
 
-    let scene_renderer = SceneRenderer::init(
-        device.clone(),
-        queue.clone(),
-        format,
-        surface.window().inner_size().width,
-        surface.window().inner_size().height,
-    )
-    .chain_err(|| "fail to create scene renderer")?;
+    let scene_renderer = Rc::new(RefCell::new(
+        SceneRenderer::init(
+            device.clone(),
+            queue.clone(),
+            format,
+            surface.window().inner_size().width,
+            surface.window().inner_size().height,
+        )
+        .chain_err(|| "fail to create scene renderer")?,
+    ));
 
     Ok(System {
         event_loop,
@@ -204,13 +218,7 @@ pub fn init(title: &str) -> Result<System> {
 }
 
 impl System {
-    pub fn main_loop<
-        F: 'static + FnMut(&mut bool, &mut Ui, &mut SceneRenderer, T) -> Result<T>,
-        T: 'static + AppStateT,
-    >(
-        self,
-        mut run_ui: F,
-    ) -> ! {
+    pub fn main_loop<T: ApplicationT + 'static>(self) -> ! {
         let System {
             event_loop,
             device,
@@ -221,7 +229,7 @@ impl System {
             mut imgui,
             mut platform,
             mut ui_renderer,
-            mut scene_renderer,
+            scene_renderer,
             ..
         } = self;
 
@@ -229,7 +237,7 @@ impl System {
 
         let mut previous_frame_end = Some(sync::now(device.clone()).boxed());
 
-        let mut prev_app_state: Option<T> = Some(Default::default());
+        let mut application = T::new(surface.clone(), scene_renderer.clone());
 
         let res = Arc::new(Mutex::new(Ok(())));
         event_loop.run(move |event, _, control_flow| match event {
@@ -262,22 +270,10 @@ impl System {
 
                 let mut ui = imgui.frame();
 
-                let mut run = true;
-                let app_state = match run_ui(
-                    &mut run,
-                    &mut ui,
-                    &mut scene_renderer,
-                    prev_app_state.take().unwrap(),
-                ) {
-                    Ok(app_state) => app_state,
-                    Err(e) => {
-                        *control_flow = ControlFlow::Exit;
-                        *res.lock().unwrap() = Err(e);
-                        return;
-                    }
-                };
-                if !run {
+                if let Err(e) = application.update_ui(&mut ui) {
                     *control_flow = ControlFlow::Exit;
+                    *res.lock().unwrap() = Err(e);
+                    return;
                 }
 
                 let (image_num, suboptimal, acquire_future) =
@@ -322,11 +318,23 @@ impl System {
                     .clear_color_image(images[image_num].clone(), [0.0; 4].into())
                     .unwrap();
 
+                let scene_state = match application
+                    .get_scene_state()
+                    .chain_err(|| "fail to get scene state when trying to render the scene")
+                {
+                    Ok(scene_state) => scene_state,
+                    Err(e) => {
+                        *control_flow = ControlFlow::Exit;
+                        *res.lock().unwrap() = Err(e);
+                        return;
+                    }
+                };
                 if let Err(e) = scene_renderer
+                    .borrow()
                     .draw_commands(
                         &mut scene_cmd_buf_builder,
                         images[image_num].clone(),
-                        &app_state.get_scene_state(),
+                        &scene_state,
                     )
                     .chain_err(|| "scene renderer fail to issue draw commands")
                 {
@@ -360,7 +368,6 @@ impl System {
                         previous_frame_end = Some(sync::now(device.clone()).boxed());
                     }
                 }
-                prev_app_state.replace(app_state);
             }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
@@ -378,6 +385,30 @@ impl System {
                 ::std::process::exit(exit_code);
             }
             event => {
+                let app_event_handler_res = match event {
+                    Event::WindowEvent {
+                        event: ref window_event,
+                        ..
+                    } => match window_event {
+                        WindowEvent::MouseInput { state, button, .. } => {
+                            application.on_mouse_button(*button, *state)
+                        }
+                        _ => Ok(()),
+                    },
+                    Event::DeviceEvent {
+                        event: ref device_event,
+                        ..
+                    } => match device_event {
+                        DeviceEvent::MouseMotion { delta } => application.on_mouse_move(*delta),
+                        _ => Ok(()),
+                    },
+                    _ => Ok(()),
+                };
+                if let Err(e) = app_event_handler_res {
+                    *control_flow = ControlFlow::Exit;
+                    *res.lock().unwrap() = Err(e);
+                    return;
+                }
                 platform.handle_event(imgui.io_mut(), surface.window(), &event);
             }
         })
