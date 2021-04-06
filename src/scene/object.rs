@@ -115,16 +115,16 @@ impl UniformsT for ObjectUniforms {
 }
 
 impl ObjectUniforms {
-    fn set_light_pos(&mut self, pos: Point3D<f32, WorldSpace>) {
+    pub fn set_light_pos(&mut self, pos: Point3D<f32, WorldSpace>) {
         self.fs_uniform.light_pos = [pos.x, pos.y, pos.z, 1.0];
     }
 
-    fn set_camera_pos(&mut self, camera: &Camera) {
+    pub fn set_camera_pos(&mut self, camera: &Camera) {
         let camera_pos = camera.get_position();
         self.fs_uniform.camera_pos = [camera_pos.x, camera_pos.y, camera_pos.z, 1.0];
     }
 
-    fn set_light_intensity(&mut self, light_intensity: f32) {
+    pub fn set_light_intensity(&mut self, light_intensity: f32) {
         self.fs_uniform.light_intensity = light_intensity;
     }
 }

@@ -7,7 +7,7 @@ mod mesh_renderer;
 
 use std::{path::PathBuf, sync::Arc};
 
-use euclid::Transform3D;
+use euclid::{Point3D, Transform3D};
 use image::{io::Reader as ImageReader, RgbaImage};
 use obj::{Obj, ObjData};
 use vulkano::{
@@ -48,9 +48,12 @@ impl ModelAndTexture {
     }
 }
 
+const LIGHT_INTENSITY: f32 = 1.0;
+
 pub struct State {
     pub color: [f32; 3],
     pub camera: Camera,
+    pub point_light_transform: Transform3D<f32, TriangleSpace, WorldSpace>,
     pub model_transform: Transform3D<f32, TriangleSpace, WorldSpace>,
 }
 
@@ -98,7 +101,7 @@ impl Renderer {
         let subpass = Subpass::from(render_pass.clone(), 0)
             .expect("fail to retrieve the first subpass from the renderpass");
         let point_light_renderer = Arc::new(
-            MeshRenderer::init(
+            PointLightRenderer::init(
                 device.clone(),
                 queue.clone(),
                 subpass.clone(),
@@ -107,8 +110,12 @@ impl Renderer {
             )
             .chain_err(|| "fail to create point light renderer")?,
         );
-        let point_light = PointLight::new(point_light_renderer.clone(), 1.0, [1.0, 0.0, 0.0])
-            .chain_err(|| "fail to create point light")?;
+        let point_light = PointLight::new(
+            point_light_renderer.clone(),
+            LIGHT_INTENSITY,
+            [1.0, 0.0, 0.0],
+        )
+        .chain_err(|| "fail to create point light")?;
         let object_renderer = Arc::new(
             ObjectRenderer::init(
                 device.clone(),
@@ -183,9 +190,20 @@ impl Renderer {
         );
         self.point_light
             .mesh
-            .prepare_draw_commands(cmd_buf_builder, &state.model_transform, &state.camera)
+            .prepare_draw_commands(cmd_buf_builder, &state.point_light_transform, &state.camera)
             .chain_err(|| "fail to issue commands to prepare drawing for the point light mesh")?;
         for object in self.objects.iter() {
+            {
+                let mut mesh = object.mesh.uniforms_lock();
+                mesh.set_light_pos(
+                    state
+                        .point_light_transform
+                        .transform_point3d(Point3D::origin())
+                        .ok_or::<Error>("invalid point light model transform".into())?,
+                );
+                mesh.set_camera_pos(&state.camera);
+                mesh.set_light_intensity(LIGHT_INTENSITY);
+            }
             object
                 .mesh
                 .prepare_draw_commands(cmd_buf_builder, &state.model_transform, &state.camera)

@@ -12,7 +12,7 @@ layout(binding = 2) uniform sampler2D tex_sampler;
 
 layout(location = 0) in vec2 texture_coord;
 layout(location = 1) in vec3 frag_pos;
-layout(location = 2) in vec3 normal;
+layout(location = 2) in vec3 in_normal;
 
 layout(location = 0) out vec4 f_color;
 
@@ -23,7 +23,7 @@ void main() {
 
   vec3 light_pos = ubo.light_pos.xyz;
   vec3 light_direction = normalize(light_pos - frag_pos);
-  vec3 normal = normalize(normal);
+  vec3 normal = normalize(in_normal);
   float diff = max(dot(light_direction, normal), 0.0);
   float light_atten_coff = ubo.light_intensity / length(light_pos - frag_pos);
   vec3 diffuse = diff * light_atten_coff * color;

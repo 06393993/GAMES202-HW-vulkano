@@ -17,10 +17,10 @@ layout(location = 2) out vec3 normal;
 
 
 void main() {
-  frag_pos = in_position.xyz;
-  normal = in_normal.xyz;
+  frag_pos = (ubo.model * vec4(in_position.xyz, 1.0)).xyz;
+  normal = (ubo.model * vec4(in_normal.xyz, 0.0)).xyz;
 
-  gl_Position = ubo.proj * ubo.view * ubo.model * vec4(in_position.xyz, 1.0);
+  gl_Position = ubo.proj * ubo.view * vec4(frag_pos, 1.0);
 
   texture_coord = in_texture_coord;
 }

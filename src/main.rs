@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use euclid::{approxeq::ApproxEq, point3, vec3, Angle, Point3D, Scale, Transform3D};
+use euclid::{approxeq::ApproxEq, point3, vec3, Angle, Transform3D};
 use imgui::*;
 use winit::event::VirtualKeyCode;
 #[macro_use]
@@ -16,7 +16,7 @@ extern crate error_chain;
 
 use scene::{
     Camera, CameraControl, CameraDirection, ModelAndTexture, Renderer as SceneRenderer,
-    State as SceneState, TriangleSpace, WorldSpace,
+    State as SceneState,
 };
 
 mod errors {
@@ -61,8 +61,8 @@ struct AppState {
     recent_frame_times: Vec<Instant>,
     camera: Option<Camera>,
     camera_speed: f32,
-    triangle_transform: Transform3D<f32, TriangleSpace, WorldSpace>,
     model_path: Option<String>,
+    start_time: Instant,
 }
 
 impl Default for AppState {
@@ -73,18 +73,31 @@ impl Default for AppState {
             recent_frame_times: vec![],
             camera: None,
             camera_speed: 0.05,
-            triangle_transform: Transform3D::from_scale(Scale::new(0.5)),
             model_path: None,
+            start_time: Instant::now(),
         }
     }
 }
 
 impl support::AppStateT for AppState {
     fn get_scene_state(&self) -> SceneState {
+        let time_elapsed = self.start_time.elapsed();
+        let point_light_transform = Transform3D::identity()
+            .then_scale(0.1, 0.1, 0.1)
+            .then_translate(vec3(
+                2.0 * (time_elapsed.as_secs_f32() * 6.0).sin(),
+                3.0 * (time_elapsed.as_secs_f32() * 4.0).cos(),
+                2.0 * (time_elapsed.as_secs_f32() * 2.0).cos(),
+            ));
+        let speed = Angle::pi() / 10.0;
+        let model_transform = Transform3D::identity()
+            .then_translate(vec3(0.0, -2.0, 0.0))
+            .then_rotate(0.0, 1.0, 0.0, speed * time_elapsed.as_secs_f32());
         SceneState {
+            point_light_transform,
             color: self.color.clone(),
             camera: self.camera.as_ref().unwrap().clone(),
-            model_transform: self.triangle_transform,
+            model_transform,
         }
     }
 }
@@ -126,8 +139,8 @@ impl AppState {
                 aspect_ratio,
                 near,
                 far,
-                &point3(2.0, 2.0, 2.0),
-                &Point3D::origin(),
+                &point3(0.0, 0.0, 5.0),
+                &point3(0.0, 0.0, 0.0),
                 &vec3(0.0, 1.0, 0.0),
             )
             .chain_err(|| "fail to initialize camera for app state")?,
@@ -151,13 +164,6 @@ impl AppState {
             }
         }
         Ok(())
-    }
-
-    fn update_scene(&mut self, delta_time: Duration) {
-        let speed = Angle::pi() / 20.0;
-        self.triangle_transform =
-            self.triangle_transform
-                .then_rotate(0.0, 1.0, 0.0, speed * delta_time.as_secs_f32());
     }
 
     fn update_ui(&mut self, ui: &mut Ui, scene_renderer: &mut SceneRenderer) {
@@ -220,7 +226,6 @@ fn run() -> Result<()> {
         app_state
             .update_camera(ui)
             .chain_err(|| "fail to update camera in main loop")?;
-        app_state.update_scene(Duration::from_secs_f32(ui.io().delta_time));
         Ok(app_state)
     });
 }
