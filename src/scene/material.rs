@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use vulkano::{
-    command_buffer::AutoCommandBufferBuilder,
+    command_buffer::{pool::standard::StandardCommandPoolBuilder, AutoCommandBufferBuilder},
     descriptor::{descriptor_set::DescriptorSet, pipeline_layout::PipelineLayoutAbstract},
     device::{Device, Queue},
 };
@@ -24,7 +24,10 @@ pub trait UniformsT: Sized + Send + Sync + 'static {
         self.set_proj_matrix(camera.get_projection_transform().to_array());
     }
 
-    fn update_buffers<P>(&self, cmd_buf_builder: &mut AutoCommandBufferBuilder<P>) -> Result<()>;
+    fn update_buffers(
+        &self,
+        cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,
+    ) -> Result<()>;
     fn create_descriptor_sets(
         &self,
         pipeline_layout: &dyn PipelineLayoutAbstract,

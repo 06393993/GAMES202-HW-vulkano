@@ -5,13 +5,15 @@
 
 use std::{
     marker::PhantomData,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex},
 };
 
 use euclid::Transform3D;
 use vulkano::{
     buffer::{immutable::ImmutableBuffer, BufferAccess, BufferUsage},
-    command_buffer::{AutoCommandBufferBuilder, DynamicState},
+    command_buffer::{
+        pool::standard::StandardCommandPoolBuilder, AutoCommandBufferBuilder, DynamicState,
+    },
     descriptor::{
         descriptor_set::DescriptorSet,
         pipeline_layout::{PipelineLayout, PipelineLayoutAbstract},
@@ -104,6 +106,20 @@ impl<V: SimpleVertex> MeshData<V> {
     }
 }
 
+pub trait MeshT<S> {
+    fn prepare_draw_commands(
+        &self,
+        cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,
+        model_transform: &Transform3D<f32, S, WorldSpace>,
+        camera: &Camera,
+    ) -> Result<()>;
+
+    fn draw_commands(
+        &self,
+        cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,
+    ) -> Result<()>;
+}
+
 // S stands for model space
 pub struct Mesh<V: VertexT, M: Material, S> {
     renderer: Arc<Renderer<V, M>>,
@@ -115,9 +131,15 @@ pub struct Mesh<V: VertexT, M: Material, S> {
 }
 
 impl<V: VertexT, M: Material, S> Mesh<V, M, S> {
-    pub fn prepare_draw_commands<P>(
+    pub fn uniforms(&self) -> Arc<Mutex<M::Uniforms>> {
+        self.uniforms.clone()
+    }
+}
+
+impl<V: VertexT, M: Material, S> MeshT<S> for Mesh<V, M, S> {
+    fn prepare_draw_commands(
         &self,
-        cmd_buf_builder: &mut AutoCommandBufferBuilder<P>,
+        cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,
         model_transform: &Transform3D<f32, S, WorldSpace>,
         camera: &Camera,
     ) -> Result<()> {
@@ -133,9 +155,9 @@ impl<V: VertexT, M: Material, S> Mesh<V, M, S> {
         Ok(())
     }
 
-    pub fn draw_commands<P>(
+    fn draw_commands(
         &self,
-        cmd_buf_builder: &mut AutoCommandBufferBuilder<P>,
+        cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,
     ) -> Result<()> {
         cmd_buf_builder
             .draw_indexed(
@@ -148,12 +170,6 @@ impl<V: VertexT, M: Material, S> Mesh<V, M, S> {
             )
             .chain_err(|| "fail to add the draw command to the command builder")?;
         Ok(())
-    }
-
-    pub fn uniforms_lock(&self) -> MutexGuard<M::Uniforms> {
-        self.uniforms
-            .lock()
-            .expect("fail to grab the lock for uniforms")
     }
 }
 

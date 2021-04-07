@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use vulkano::{
     buffer::{device_local::DeviceLocalBuffer, BufferUsage},
-    command_buffer::AutoCommandBufferBuilder,
+    command_buffer::{pool::standard::StandardCommandPoolBuilder, AutoCommandBufferBuilder},
     descriptor::{
         descriptor_set::{DescriptorSet, PersistentDescriptorSet},
         pipeline_layout::PipelineLayoutAbstract,
@@ -50,7 +50,10 @@ impl UniformsT for EmissiveUniforms {
         self.uniform.proj.copy_from_slice(&mat);
     }
 
-    fn update_buffers<P>(&self, cmd_buf_builder: &mut AutoCommandBufferBuilder<P>) -> Result<()> {
+    fn update_buffers(
+        &self,
+        cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,
+    ) -> Result<()> {
         cmd_buf_builder
             .update_buffer(self.buffer.clone(), self.uniform.clone())
             .chain_err(|| "fail to issue update buffers commands to update emissive uniform")?;

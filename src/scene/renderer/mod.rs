@@ -11,7 +11,9 @@ use euclid::{Point3D, Transform3D};
 use image::{io::Reader as ImageReader, RgbaImage};
 use obj::{Obj, ObjData};
 use vulkano::{
-    command_buffer::{AutoCommandBufferBuilder, SubpassContents},
+    command_buffer::{
+        pool::standard::StandardCommandPoolBuilder, AutoCommandBufferBuilder, SubpassContents,
+    },
     device::{Device, Queue},
     format::{ClearValue, D16Unorm, Format},
     framebuffer::{Framebuffer, RenderPassAbstract, Subpass},
@@ -25,7 +27,7 @@ use super::{
     Camera, TriangleSpace, WorldSpace,
 };
 use crate::errors::*;
-pub use mesh_renderer::{Mesh, MeshData, Renderer as MeshRenderer, SimpleVertex};
+pub use mesh_renderer::{Mesh, MeshData, MeshT, Renderer as MeshRenderer, SimpleVertex};
 
 #[derive(Clone)]
 pub struct ModelAndTexture {
@@ -59,7 +61,7 @@ pub struct State {
 
 pub struct Renderer {
     point_light: PointLight<TriangleSpace>,
-    object_renderer: Arc<ObjectRenderer>,
+    object_renderer: ObjectRenderer,
     objects: Vec<Object<TriangleSpace>>,
     depth_buffer: Arc<AttachmentImage<D16Unorm>>,
     render_pass: Arc<dyn RenderPassAbstract + Send + Sync>,
@@ -116,16 +118,14 @@ impl Renderer {
             [1.0, 0.0, 0.0],
         )
         .chain_err(|| "fail to create point light")?;
-        let object_renderer = Arc::new(
-            ObjectRenderer::init(
-                device.clone(),
-                queue.clone(),
-                subpass.clone(),
-                width,
-                height,
-            )
-            .chain_err(|| "fail to create object renderer")?,
-        );
+        let object_renderer = ObjectRenderer::init(
+            device.clone(),
+            queue.clone(),
+            subpass.clone(),
+            width,
+            height,
+        )
+        .chain_err(|| "fail to create object renderer")?;
         let depth_buffer = AttachmentImage::new(device.clone(), [width, height], D16Unorm)
             .chain_err(|| "fail to create the image for the depth attachment")?;
         Ok(Self {
@@ -147,8 +147,8 @@ impl Renderer {
             .map(|[u, v]| [*u, 1.0 - *v])
             .collect();
         let material = Arc::new(
-            ObjectMaterial::new(
-                self.object_renderer.as_ref(),
+            ObjectMaterial::with_texture(
+                &self.object_renderer,
                 model_and_texture.texture.as_ref(),
                 // TODO: read ks from the obj file
                 [0.0, 0.0, 0.0],
@@ -158,7 +158,7 @@ impl Renderer {
         for object in model_and_texture.obj.objects.iter() {
             for group in object.groups.iter() {
                 self.objects.push(
-                    Object::new(
+                    Object::with_texture(
                         self.object_renderer.clone(),
                         position,
                         &texture_coord,
@@ -173,9 +173,9 @@ impl Renderer {
         Ok(())
     }
 
-    pub fn draw_commands<P>(
+    pub fn draw_commands(
         &self,
-        cmd_buf_builder: &mut AutoCommandBufferBuilder<P>,
+        cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,
         image: Arc<impl ImageViewAccess + Send + Sync + 'static>,
         state: &State,
     ) -> Result<()> {
@@ -194,15 +194,15 @@ impl Renderer {
             .chain_err(|| "fail to issue commands to prepare drawing for the point light mesh")?;
         for object in self.objects.iter() {
             {
-                let mut mesh = object.mesh.uniforms_lock();
-                mesh.set_light_pos(
+                let mut uniforms = object.get_uniforms_lock();
+                uniforms.set_light_pos(
                     state
                         .point_light_transform
                         .transform_point3d(Point3D::origin())
                         .ok_or::<Error>("invalid point light model transform".into())?,
                 );
-                mesh.set_camera_pos(&state.camera);
-                mesh.set_light_intensity(LIGHT_INTENSITY);
+                uniforms.set_camera_pos(&state.camera);
+                uniforms.set_light_intensity(LIGHT_INTENSITY);
             }
             object
                 .mesh

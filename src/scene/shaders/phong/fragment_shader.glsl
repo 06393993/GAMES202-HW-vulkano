@@ -8,16 +8,24 @@ layout(binding = 1) uniform UniformBufferObject {
   float light_intensity;
 }
 ubo;
+#ifdef WITH_TEXTURE
 layout(binding = 2) uniform sampler2D tex_sampler;
+#endif
 
+#ifdef WITH_TEXTURE
 layout(location = 0) in vec2 texture_coord;
+#endif
 layout(location = 1) in vec3 frag_pos;
 layout(location = 2) in vec3 in_normal;
 
 layout(location = 0) out vec4 f_color;
 
 void main() {
+#ifdef WITH_TEXTURE
   vec3 color = pow(texture(tex_sampler, texture_coord).rgb, vec3(2.2));
+#else
+  vec3 color = ubo.kd.xyz;
+#endif
 
   vec3 ambient = 0.05 * color;
 
