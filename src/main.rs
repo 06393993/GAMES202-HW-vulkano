@@ -54,14 +54,7 @@ fn select_model_and_texture_files() -> Result<Option<ModelAndTexture>> {
     } else {
         return Ok(None);
     };
-    let texture_path =
-        tinyfiledialogs::open_file_dialog("select texture file", "", Some((&["*.png"], "")));
-    let texture_path = if let Some(texture_path) = texture_path {
-        PathBuf::from(texture_path)
-    } else {
-        return Ok(None);
-    };
-    ModelAndTexture::load(&model_path, &texture_path).map(Some)
+    ModelAndTexture::load(&model_path).map(Some)
 }
 
 struct Application {

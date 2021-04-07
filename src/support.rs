@@ -364,7 +364,7 @@ impl System {
                         previous_frame_end = Some(sync::now(device.clone()).boxed());
                     }
                     Err(e) => {
-                        println!("Failed to flush future: {:?}", e);
+                        eprintln!("Failed to flush future: {:?}", e);
                         previous_frame_end = Some(sync::now(device.clone()).boxed());
                     }
                 }

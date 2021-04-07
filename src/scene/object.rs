@@ -169,6 +169,7 @@ impl ObjectUniforms {
 pub struct ObjectMaterial<S> {
     texture: Option<Texture>,
     ks: [f32; 3],
+    kd: [f32; 3],
     phantom: PhantomData<S>,
 }
 
@@ -201,6 +202,7 @@ impl ObjectMaterial<TexturePhongShaders> {
                 image,
                 sampler: Sampler::simple_repeat_linear(mesh_renderer.get_device()),
             }),
+            kd: Default::default(),
             ks,
             phantom: PhantomData,
         })
@@ -208,9 +210,10 @@ impl ObjectMaterial<TexturePhongShaders> {
 }
 
 impl ObjectMaterial<NoTexturePhongShaders> {
-    pub fn without_texture(ks: [f32; 3]) -> Result<Self> {
+    pub fn without_texture(kd: [f32; 3], ks: [f32; 3]) -> Result<Self> {
         Ok(Self {
             texture: None,
+            kd,
             ks,
             phantom: PhantomData,
         })
@@ -243,7 +246,7 @@ impl<T: ShadersT> Material for ObjectMaterial<T> {
         Ok(ObjectUniforms {
             vs_uniform: Default::default(),
             fs_uniform: FSUniform {
-                kd: Default::default(),
+                kd: [self.kd[0], self.kd[1], self.kd[2], 0.0],
                 ks: [self.ks[0], self.ks[1], self.ks[2], 0.0],
                 light_pos: Default::default(),
                 camera_pos: Default::default(),

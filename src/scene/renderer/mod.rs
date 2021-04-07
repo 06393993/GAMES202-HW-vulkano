@@ -5,11 +5,11 @@
 
 mod mesh_renderer;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use euclid::{Point3D, Transform3D};
 use image::{io::Reader as ImageReader, RgbaImage};
-use obj::{Obj, ObjData};
+use obj::{Obj, ObjData, ObjMaterial};
 use vulkano::{
     command_buffer::{
         pool::standard::StandardCommandPoolBuilder, AutoCommandBufferBuilder, SubpassContents,
@@ -32,20 +32,36 @@ pub use mesh_renderer::{Mesh, MeshData, MeshT, Renderer as MeshRenderer, SimpleV
 #[derive(Clone)]
 pub struct ModelAndTexture {
     obj: Arc<ObjData>,
-    texture: Arc<RgbaImage>,
+    textures: HashMap<String, Arc<RgbaImage>>,
 }
 
 impl ModelAndTexture {
-    pub fn load(obj_path: &PathBuf, texture_path: &PathBuf) -> Result<Self> {
-        let obj = Obj::load(obj_path.as_path()).chain_err(|| "fail to load obj file")?;
-        let texture = ImageReader::open(texture_path.as_path())
-            .chain_err(|| format!("fail to open image file: {}", texture_path.display()))?
-            .decode()
-            .chain_err(|| "fail to decode the image")?
-            .to_rgba8();
+    pub fn load(obj_path: &PathBuf) -> Result<Self> {
+        let mut obj = Obj::load(obj_path.as_path()).chain_err(|| "fail to load obj file")?;
+        obj.load_mtls()
+            .chain_err(|| "fail to load associated mtl file")?;
+        let mut textures: HashMap<_, _> = Default::default();
+        for mtl in obj.data.material_libs.iter() {
+            for material in mtl.materials.iter() {
+                if let Some(ref name) = material.map_kd {
+                    let texture_path = obj_path
+                        .parent()
+                        .expect("the path to obj file can't be root")
+                        .join(&name);
+                    let texture = ImageReader::open(texture_path.as_path())
+                        .chain_err(|| {
+                            format!("fail to open image file: {}", texture_path.display())
+                        })?
+                        .decode()
+                        .chain_err(|| "fail to decode the image")?
+                        .to_rgba8();
+                    textures.insert(name.clone(), Arc::new(texture));
+                }
+            }
+        }
         Ok(Self {
             obj: Arc::new(obj.data),
-            texture: Arc::new(texture),
+            textures,
         })
     }
 }
@@ -146,28 +162,121 @@ impl Renderer {
             .iter()
             .map(|[u, v]| [*u, 1.0 - *v])
             .collect();
-        let material = Arc::new(
-            ObjectMaterial::with_texture(
-                &self.object_renderer,
-                model_and_texture.texture.as_ref(),
-                // TODO: read ks from the obj file
-                [0.0, 0.0, 0.0],
-            )
-            .chain_err(|| "fail to create the object material")?,
-        );
+        let mut name_to_texture_material: HashMap<_, _> = Default::default();
+        let mut name_to_no_texture_material: HashMap<_, _> = Default::default();
+        for mtl in model_and_texture.obj.material_libs.iter() {
+            for material in mtl.materials.iter() {
+                let name = &material.name;
+                let ks = material.ks.unwrap_or([0.0, 0.0, 0.0]);
+                if let Some(ref texture_name) = material.map_kd {
+                    let texture = model_and_texture
+                        .textures
+                        .get(texture_name)
+                        .ok_or::<Error>(
+                            format!("fail to find map_kd with name {}", texture_name).into(),
+                        )?
+                        .clone();
+                    if name_to_texture_material
+                        .insert(
+                            name,
+                            Arc::new(
+                                ObjectMaterial::with_texture(
+                                    &self.object_renderer,
+                                    texture.as_ref(),
+                                    ks,
+                                )
+                                .chain_err(|| {
+                                    format!("fail to create the object material {}", name)
+                                })?,
+                            ),
+                        )
+                        .is_some()
+                    {
+                        return Err(format!(
+                            "materials with duplicate name {} not supproted",
+                            name
+                        )
+                        .into());
+                    };
+                } else {
+                    let kd = match material.kd {
+                        Some(kd) => kd,
+                        None => {
+                            return Err(format!(
+                                "the material {} with neither map_kd nor kd is not supported",
+                                name
+                            )
+                            .into())
+                        }
+                    };
+                    if name_to_no_texture_material
+                        .insert(
+                            name,
+                            Arc::new(ObjectMaterial::without_texture(kd, ks).chain_err(|| {
+                                format!("fail to create the object material {}", name)
+                            })?),
+                        )
+                        .is_some()
+                    {
+                        return Err(format!(
+                            "materials with duplicate name {} not supproted",
+                            name
+                        )
+                        .into());
+                    };
+                }
+            }
+        }
+
         for object in model_and_texture.obj.objects.iter() {
             for group in object.groups.iter() {
-                self.objects.push(
-                    Object::with_texture(
-                        self.object_renderer.clone(),
-                        position,
-                        &texture_coord,
-                        normal,
-                        group,
-                        material.clone(),
-                    )
-                    .chain_err(|| "fail to create object")?,
-                );
+                let material = match &group.material {
+                    Some(ObjMaterial::Mtl(material)) => material,
+                    Some(ObjMaterial::Ref(name)) => {
+                        return Err(format!(
+                            "object material {} in group {} not loaded",
+                            name, group.name
+                        )
+                        .into())
+                    }
+                    None => {
+                        return Err(format!(
+                            "object group {} without material associated is not supported",
+                            group.name
+                        )
+                        .into())
+                    }
+                };
+                if material.map_kd.is_some() {
+                    let material = name_to_texture_material
+                        .get(&material.name)
+                        .expect("all material should have been loaded");
+                    self.objects.push(
+                        Object::with_texture(
+                            self.object_renderer.clone(),
+                            position,
+                            &texture_coord,
+                            normal,
+                            group,
+                            material.clone(),
+                        )
+                        .chain_err(|| "fail to create object")?,
+                    );
+                } else {
+                    let material = name_to_no_texture_material
+                        .get(&material.name)
+                        .expect("all material should have been loaded");
+                    self.objects.push(
+                        Object::without_texture(
+                            self.object_renderer.clone(),
+                            position,
+                            normal,
+                            group,
+                            material.clone(),
+                        )
+                        .chain_err(|| "fail to create object")?,
+                    );
+                }
             }
         }
         Ok(())
