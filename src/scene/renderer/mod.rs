@@ -5,9 +5,9 @@
 
 mod mesh_renderer;
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{cell::RefCell, collections::HashMap, path::PathBuf, sync::Arc};
 
-use euclid::{Point3D, Transform3D};
+use euclid::Transform3D;
 use image::{io::Reader as ImageReader, RgbaImage};
 use obj::{Obj, ObjData, ObjMaterial};
 use vulkano::{
@@ -76,9 +76,9 @@ pub struct State {
 }
 
 pub struct Renderer {
-    point_light: PointLight<TriangleSpace>,
+    point_light: RefCell<PointLight<TriangleSpace>>,
     object_renderer: ObjectRenderer,
-    objects: Vec<Object<TriangleSpace>>,
+    objects: Vec<RefCell<Object<TriangleSpace>>>,
     depth_buffer: Arc<AttachmentImage<D16Unorm>>,
     render_pass: Arc<dyn RenderPassAbstract + Send + Sync>,
 }
@@ -145,7 +145,7 @@ impl Renderer {
         let depth_buffer = AttachmentImage::new(device.clone(), [width, height], D16Unorm)
             .chain_err(|| "fail to create the image for the depth attachment")?;
         Ok(Self {
-            point_light,
+            point_light: RefCell::new(point_light),
             object_renderer,
             objects: vec![],
             depth_buffer,
@@ -251,31 +251,29 @@ impl Renderer {
                     let material = name_to_texture_material
                         .get(&material.name)
                         .expect("all material should have been loaded");
-                    self.objects.push(
-                        Object::with_texture(
-                            self.object_renderer.clone(),
-                            position,
-                            &texture_coord,
-                            normal,
-                            group,
-                            material.clone(),
-                        )
-                        .chain_err(|| "fail to create object")?,
-                    );
+                    let object = Object::with_texture(
+                        self.object_renderer.clone(),
+                        position,
+                        &texture_coord,
+                        normal,
+                        group,
+                        material.clone(),
+                    )
+                    .chain_err(|| "fail to create object")?;
+                    self.objects.push(RefCell::new(object));
                 } else {
                     let material = name_to_no_texture_material
                         .get(&material.name)
                         .expect("all material should have been loaded");
-                    self.objects.push(
-                        Object::without_texture(
-                            self.object_renderer.clone(),
-                            position,
-                            normal,
-                            group,
-                            material.clone(),
-                        )
-                        .chain_err(|| "fail to create object")?,
-                    );
+                    let object = Object::without_texture(
+                        self.object_renderer.clone(),
+                        position,
+                        normal,
+                        group,
+                        material.clone(),
+                    )
+                    .chain_err(|| "fail to create object")?;
+                    self.objects.push(RefCell::new(object));
                 }
             }
         }
@@ -298,24 +296,18 @@ impl Renderer {
                 .chain_err(|| "fail to create the framebuffer to draw on")?,
         );
         self.point_light
-            .mesh
+            .borrow_mut()
             .prepare_draw_commands(cmd_buf_builder, &state.point_light_transform, &state.camera)
             .chain_err(|| "fail to issue commands to prepare drawing for the point light mesh")?;
         for object in self.objects.iter() {
-            {
-                let mut uniforms = object.get_uniforms_lock();
-                uniforms.set_light_pos(
-                    state
-                        .point_light_transform
-                        .transform_point3d(Point3D::origin())
-                        .ok_or::<Error>("invalid point light model transform".into())?,
-                );
-                uniforms.set_camera_pos(&state.camera);
-                uniforms.set_light_intensity(LIGHT_INTENSITY);
-            }
             object
-                .mesh
-                .prepare_draw_commands(cmd_buf_builder, &state.model_transform, &state.camera)
+                .borrow_mut()
+                .prepare_draw_commands(
+                    cmd_buf_builder,
+                    &state.model_transform,
+                    &state.camera,
+                    &self.point_light.borrow(),
+                )
                 .chain_err(|| "fail to issue commands to prepare drawing for the object mesh")?;
         }
         cmd_buf_builder
@@ -326,11 +318,13 @@ impl Renderer {
             )
             .chain_err(|| "fail to add the begin renderpass command to the command builder")?;
         self.point_light
+            .borrow()
             .mesh
             .draw_commands(cmd_buf_builder)
             .chain_err(|| "fail to issue draw commands for the point light mesh")?;
         for object in self.objects.iter() {
             object
+                .borrow()
                 .mesh
                 .draw_commands(cmd_buf_builder)
                 .chain_err(|| "fail to issue draw commands for the object mesh")?;

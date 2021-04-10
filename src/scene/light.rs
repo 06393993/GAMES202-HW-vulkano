@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use euclid::{Point3D, Transform3D};
 use vulkano::{
     buffer::{device_local::DeviceLocalBuffer, BufferUsage},
     command_buffer::{pool::standard::StandardCommandPoolBuilder, AutoCommandBufferBuilder},
@@ -19,6 +20,7 @@ use super::{
     material::{Material, SetCamera, UniformsT},
     renderer::{Mesh, MeshData, MeshRenderer, SimpleVertex},
     shaders::light::Shaders as EmissiveShaders,
+    Camera, WorldSpace,
 };
 use crate::errors::*;
 
@@ -147,6 +149,7 @@ pub type PointLightRenderer = MeshRenderer<PointLightVertex, EmissiveMaterial>;
 pub struct PointLight<S> {
     pub material: EmissiveMaterial,
     pub mesh: Mesh<PointLightVertex, EmissiveMaterial, S>,
+    uniforms: EmissiveUniforms,
 }
 
 impl<S> PointLight<S> {
@@ -156,9 +159,39 @@ impl<S> PointLight<S> {
         light_color: [f32; 3],
     ) -> Result<Self> {
         let material = EmissiveMaterial::new(light_intensity, light_color);
-        let mesh = mesh_renderer
+        let (mesh, uniforms) = mesh_renderer
             .create_mesh(MeshData::<PointLightVertex>::cube(), &material)
             .chain_err(|| "fail to create mesh")?;
-        Ok(Self { material, mesh })
+        Ok(Self {
+            material,
+            mesh,
+            uniforms,
+        })
+    }
+
+    pub fn prepare_draw_commands(
+        &mut self,
+        cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,
+        model_transform: &Transform3D<f32, S, WorldSpace>,
+        camera: &Camera,
+    ) -> Result<()> {
+        self.uniforms.set_model_matrix(model_transform.to_array());
+        self.uniforms.set_view_proj_matrix_from_camera(camera);
+        self.uniforms
+            .update_buffers(cmd_buf_builder)
+            .chain_err(|| {
+                "fail to add the update buffer for uniforms command to the command builder"
+            })?;
+        Ok(())
+    }
+
+    pub fn get_position(&self) -> Result<Point3D<f32, WorldSpace>> {
+        Transform3D::from_array(self.uniforms.uniform.model)
+            .transform_point3d(Point3D::<f32, S>::origin())
+            .ok_or("invalid point light model transform".into())
+    }
+
+    pub fn get_intensity(&self) -> f32 {
+        self.uniforms.uniform.light_intensity
     }
 }

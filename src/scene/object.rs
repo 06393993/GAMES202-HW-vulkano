@@ -3,14 +3,9 @@
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
-use std::{
-    collections::HashMap,
-    hash::Hash,
-    marker::PhantomData,
-    sync::{Arc, Mutex, MutexGuard},
-};
+use std::{collections::HashMap, hash::Hash, marker::PhantomData, sync::Arc};
 
-use euclid::Point3D;
+use euclid::{Point3D, Transform3D};
 use image::RgbaImage;
 use obj::{Group, IndexTuple};
 use ordered_float::OrderedFloat;
@@ -31,6 +26,7 @@ use vulkano::{
 };
 
 use super::{
+    light::PointLight,
     material::{Material, SetCamera, UniformsT},
     renderer::{MeshData, MeshRenderer, MeshT},
     shaders::{
@@ -155,7 +151,7 @@ impl UniformsT for ObjectUniforms {
 }
 
 impl ObjectUniforms {
-    pub fn set_light_pos(&mut self, pos: Point3D<f32, WorldSpace>) {
+    pub fn set_light_pos(&mut self, pos: &Point3D<f32, WorldSpace>) {
         self.fs_uniform.light_pos = [pos.x, pos.y, pos.z, 1.0];
     }
 
@@ -386,7 +382,7 @@ fn create_index_to_vertex_map<'a>(
 
 pub struct Object<S> {
     pub mesh: Box<dyn MeshT<S>>,
-    uniforms: Arc<Mutex<ObjectUniforms>>,
+    uniforms: ObjectUniforms,
 }
 
 impl<S: 'static> Object<S> {
@@ -418,10 +414,9 @@ impl<S: 'static> Object<S> {
                 .chain_err(|| "fail to generte indexed vertex attributes from vertex attributes")?;
         let mesh_data =
             MeshData::create(vertex_data, indices).chain_err(|| "fail to load vertex data")?;
-        let mesh = mesh_renderer
+        let (mesh, uniforms) = mesh_renderer
             .create_mesh(mesh_data, material.as_ref())
             .chain_err(|| "fail to create mesh")?;
-        let uniforms = mesh.uniforms();
         Ok(Self {
             mesh: Box::new(mesh),
             uniforms,
@@ -499,9 +494,28 @@ impl<S: 'static> Object<S> {
         .chain_err(|| "fail to create an object without textures")
     }
 
-    pub fn get_uniforms_lock(&self) -> MutexGuard<ObjectUniforms> {
+    pub fn prepare_draw_commands<T>(
+        &mut self,
+        cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,
+        model_transform: &Transform3D<f32, S, WorldSpace>,
+        camera: &Camera,
+        // TODO: replace with &PointLight
+        light: &PointLight<T>,
+    ) -> Result<()> {
+        self.uniforms.set_light_pos(
+            &light
+                .get_position()
+                .chain_err(|| "fail to get light position")?,
+        );
+        self.uniforms.set_camera_pos(camera);
+        self.uniforms.set_light_intensity(light.get_intensity());
+        self.uniforms.set_model_matrix(model_transform.to_array());
+        self.uniforms.set_view_proj_matrix_from_camera(camera);
         self.uniforms
-            .lock()
-            .expect("fail to grab the lock for uniforms")
+            .update_buffers(cmd_buf_builder)
+            .chain_err(|| {
+                "fail to add the update buffer for uniforms command to the command builder"
+            })?;
+        Ok(())
     }
 }

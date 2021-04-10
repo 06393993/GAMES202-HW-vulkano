@@ -3,12 +3,8 @@
 // This software is released under the MIT License.
 // https://opensource.org/licenses/MIT
 
-use std::{
-    marker::PhantomData,
-    sync::{Arc, Mutex},
-};
+use std::{marker::PhantomData, sync::Arc};
 
-use euclid::Transform3D;
 use vulkano::{
     buffer::{immutable::ImmutableBuffer, BufferAccess, BufferUsage},
     command_buffer::{
@@ -29,7 +25,7 @@ use vulkano::{
     sync::GpuFuture,
 };
 
-use super::{super::shaders::ShadersT, Camera, Material, SetCamera, UniformsT, WorldSpace};
+use super::{super::shaders::ShadersT, Material, SetCamera, UniformsT};
 use crate::errors::*;
 
 pub trait SimpleVertex: VertexT {
@@ -107,13 +103,6 @@ impl<V: SimpleVertex> MeshData<V> {
 }
 
 pub trait MeshT<S> {
-    fn prepare_draw_commands(
-        &self,
-        cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,
-        model_transform: &Transform3D<f32, S, WorldSpace>,
-        camera: &Camera,
-    ) -> Result<()>;
-
     fn draw_commands(
         &self,
         cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,
@@ -126,38 +115,13 @@ pub struct Mesh<V: VertexT, M: Material, S> {
     vertex_buffer: Arc<dyn BufferAccess + Send + Sync>,
     index_buffer: Arc<ImmutableBuffer<[u16]>>,
     descriptor_sets: Vec<Arc<dyn DescriptorSet + Send + Sync>>,
-    uniforms: Arc<Mutex<M::Uniforms>>,
     phantom: PhantomData<S>,
-}
-
-impl<V: VertexT, M: Material, S> Mesh<V, M, S> {
-    pub fn uniforms(&self) -> Arc<Mutex<M::Uniforms>> {
-        self.uniforms.clone()
-    }
 }
 
 impl<V: VertexT, M: Material, S> MeshT<S> for Mesh<V, M, S>
 where
     M::Uniforms: SetCamera,
 {
-    fn prepare_draw_commands(
-        &self,
-        cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,
-        model_transform: &Transform3D<f32, S, WorldSpace>,
-        camera: &Camera,
-    ) -> Result<()> {
-        let mut uniforms = self
-            .uniforms
-            .lock()
-            .expect("fail to grab the lock of uniforms");
-        uniforms.set_model_matrix(model_transform.to_array());
-        uniforms.set_view_proj_matrix_from_camera(camera);
-        uniforms.update_buffers(cmd_buf_builder).chain_err(|| {
-            "fail to add the update buffer for uniforms command to the command builder"
-        })?;
-        Ok(())
-    }
-
     fn draw_commands(
         &self,
         cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,
@@ -236,7 +200,7 @@ impl<V: VertexT, M: Material> Renderer<V, M> {
         self: &Arc<Self>,
         data: MeshData<V>,
         material: &M,
-    ) -> Result<Mesh<V, M, S>> {
+    ) -> Result<(Mesh<V, M, S>, M::Uniforms)> {
         let MeshData {
             vertices: vertex_data,
             indices: index_data,
@@ -271,14 +235,16 @@ impl<V: VertexT, M: Material> Renderer<V, M> {
         let descriptor_sets = uniforms
             .create_descriptor_sets(self.pipeline_layout.as_ref())
             .chain_err(|| "fail to create descriptor sets for uniforms")?;
-        Ok(Mesh {
-            renderer: self.clone(),
-            vertex_buffer,
-            index_buffer,
-            descriptor_sets,
-            uniforms: Arc::new(Mutex::new(uniforms)),
-            phantom: PhantomData,
-        })
+        Ok((
+            Mesh {
+                renderer: self.clone(),
+                vertex_buffer,
+                index_buffer,
+                descriptor_sets,
+                phantom: PhantomData,
+            },
+            uniforms,
+        ))
     }
 
     pub fn get_device(&self) -> Arc<Device> {
