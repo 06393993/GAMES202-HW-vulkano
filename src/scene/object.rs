@@ -25,6 +25,7 @@ use vulkano::{
     format::R8G8B8A8Unorm,
     framebuffer::{RenderPassAbstract, Subpass},
     image::{immutable::ImmutableImage, Dimensions, MipmapsCount},
+    pipeline::vertex::Vertex,
     sampler::Sampler,
     sync::GpuFuture,
 };
@@ -387,45 +388,32 @@ pub struct Object<S> {
 }
 
 impl<S: 'static> Object<S> {
-    pub fn with_texture(
-        renderer: ObjectRenderer,
+    fn new<V, K, Sh>(
+        mesh_renderer: Arc<MeshRenderer<V, ObjectMaterial<Sh>>>,
         position: &Vec<[f32; 3]>,
-        texture_coord: &Vec<[f32; 2]>,
+        texture_coord: Option<&Vec<[f32; 2]>>,
         normal: &Vec<[f32; 3]>,
         group: &Group,
-        material: Arc<ObjectMaterial<TexturePhongShaders>>,
-    ) -> Result<Self> {
-        let mesh_renderer = renderer.with_texture_renderer;
+        material: Arc<ObjectMaterial<Sh>>,
+        vertex_to_struct: impl Fn(
+            Result<(&[f32; 3], Option<&[f32; 2]>, Option<&[f32; 3]>)>,
+        ) -> Result<V>,
+        vertex_to_key: impl Fn(&V) -> K,
+    ) -> Result<Self>
+    where
+        V: Vertex,
+        K: Hash + Eq,
+        Sh: ShadersT + 'static,
+    {
         let vertex_data = group
             .polys
             .iter()
             .flat_map(|poly| poly.0.iter())
-            .map(create_index_to_vertex_map(
-                position,
-                Some(texture_coord),
-                normal,
-            ))
-            .map(|v| {
-                let (position, texture, normal) = v?;
-                let normal =
-                    normal.ok_or::<Error>("object without normals not supported".into())?;
-                let texture =
-                    texture.ok_or::<Error>("object without textures not supported".into())?;
-                Ok(ObjectWithTextureVertex {
-                    in_position: [position[0], position[1], position[2], 1.0],
-                    in_normal: [normal[0], normal[1], normal[2], 0.0],
-                    in_texture_coord: texture.clone(),
-                })
-            });
+            .map(create_index_to_vertex_map(position, texture_coord, normal))
+            .map(vertex_to_struct);
         let (vertex_data, indices) =
-            vertex_attributes_to_indexed_vertex_attributes(vertex_data, |v| {
-                (
-                    Convert::<[f32; 4], _>::to(&v.in_position),
-                    Convert::<[f32; 4], _>::to(&v.in_normal),
-                    Convert::<[f32; 2], _>::to(&v.in_texture_coord),
-                )
-            })
-            .chain_err(|| "fail to generte indexed vertex attributes from vertex attributes")?;
+            vertex_attributes_to_indexed_vertex_attributes(vertex_data, vertex_to_key)
+                .chain_err(|| "fail to generte indexed vertex attributes from vertex attributes")?;
         let mesh_data =
             MeshData::create(vertex_data, indices).chain_err(|| "fail to load vertex data")?;
         let mesh = mesh_renderer
@@ -438,6 +426,44 @@ impl<S: 'static> Object<S> {
         })
     }
 
+    pub fn with_texture(
+        renderer: ObjectRenderer,
+        position: &Vec<[f32; 3]>,
+        texture_coord: &Vec<[f32; 2]>,
+        normal: &Vec<[f32; 3]>,
+        group: &Group,
+        material: Arc<ObjectMaterial<TexturePhongShaders>>,
+    ) -> Result<Self> {
+        Self::new(
+            renderer.with_texture_renderer,
+            position,
+            Some(texture_coord),
+            normal,
+            group,
+            material,
+            |v| {
+                let (position, texture, normal) = v?;
+                let normal =
+                    normal.ok_or::<Error>("object without normals not supported".into())?;
+                let texture =
+                    texture.ok_or::<Error>("object without textures not supported".into())?;
+                Ok(ObjectWithTextureVertex {
+                    in_position: [position[0], position[1], position[2], 1.0],
+                    in_normal: [normal[0], normal[1], normal[2], 0.0],
+                    in_texture_coord: texture.clone(),
+                })
+            },
+            |v| {
+                (
+                    Convert::<[f32; 4], _>::to(&v.in_position),
+                    Convert::<[f32; 4], _>::to(&v.in_normal),
+                    Convert::<[f32; 2], _>::to(&v.in_texture_coord),
+                )
+            },
+        )
+        .chain_err(|| "fail to create an object with textures")
+    }
+
     pub fn without_texture(
         renderer: ObjectRenderer,
         position: &Vec<[f32; 3]>,
@@ -445,13 +471,14 @@ impl<S: 'static> Object<S> {
         group: &Group,
         material: Arc<ObjectMaterial<NoTexturePhongShaders>>,
     ) -> Result<Self> {
-        let mesh_renderer = renderer.no_texture_renderer;
-        let vertex_data = group
-            .polys
-            .iter()
-            .flat_map(|poly| poly.0.iter())
-            .map(create_index_to_vertex_map(position, None, normal))
-            .map(|v| {
+        Self::new(
+            renderer.no_texture_renderer,
+            position,
+            None,
+            normal,
+            group,
+            material,
+            |v| {
                 let (position, _, normal) = v?;
                 let normal =
                     normal.ok_or::<Error>("object without normals not supported".into())?;
@@ -459,25 +486,15 @@ impl<S: 'static> Object<S> {
                     in_position: [position[0], position[1], position[2], 1.0],
                     in_normal: [normal[0], normal[1], normal[2], 0.0],
                 })
-            });
-        let (vertex_data, indices) =
-            vertex_attributes_to_indexed_vertex_attributes(vertex_data, |v| {
+            },
+            |v| {
                 (
                     Convert::<[f32; 4], _>::to(&v.in_position),
                     Convert::<[f32; 4], _>::to(&v.in_normal),
                 )
-            })
-            .chain_err(|| "fail to generte indexed vertex attributes from vertex attributes")?;
-        let mesh_data =
-            MeshData::create(vertex_data, indices).chain_err(|| "fail to load vertex data")?;
-        let mesh = mesh_renderer
-            .create_mesh(mesh_data, material.as_ref())
-            .chain_err(|| "fail to create mesh")?;
-        let uniforms = mesh.uniforms();
-        Ok(Self {
-            mesh: Box::new(mesh),
-            uniforms,
-        })
+            },
+        )
+        .chain_err(|| "fail to create an object without textures")
     }
 
     pub fn get_uniforms_lock(&self) -> MutexGuard<ObjectUniforms> {
