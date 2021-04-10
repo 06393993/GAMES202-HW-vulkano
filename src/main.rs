@@ -109,7 +109,7 @@ impl support::ApplicationT for Application {
             .then_rotate(0.0, 1.0, 0.0, speed * time_elapsed.as_secs_f32());
         Ok(SceneState {
             point_light_transform,
-            color: self.color.clone(),
+            color: self.color,
             camera: self
                 .get_camera_mut()
                 .chain_err(|| "fail to get camera")?

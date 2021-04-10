@@ -41,9 +41,7 @@ mod clipboard {
     pub struct ClipboardSupport(ClipboardContext);
 
     pub fn init() -> Option<ClipboardSupport> {
-        ClipboardContext::new()
-            .ok()
-            .map(|ctx| ClipboardSupport(ctx))
+        ClipboardContext::new().ok().map(ClipboardSupport)
     }
 
     impl ClipboardBackend for ClipboardSupport {
@@ -387,21 +385,13 @@ impl System {
             event => {
                 let app_event_handler_res = match event {
                     Event::WindowEvent {
-                        event: ref window_event,
+                        event: WindowEvent::MouseInput { state, button, .. },
                         ..
-                    } => match window_event {
-                        WindowEvent::MouseInput { state, button, .. } => {
-                            application.on_mouse_button(*button, *state)
-                        }
-                        _ => Ok(()),
-                    },
+                    } => application.on_mouse_button(button, state),
                     Event::DeviceEvent {
-                        event: ref device_event,
+                        event: DeviceEvent::MouseMotion { delta },
                         ..
-                    } => match device_event {
-                        DeviceEvent::MouseMotion { delta } => application.on_mouse_move(*delta),
-                        _ => Ok(()),
-                    },
+                    } => application.on_mouse_move(delta),
                     _ => Ok(()),
                 };
                 if let Err(e) = app_event_handler_res {

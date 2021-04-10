@@ -127,7 +127,7 @@ impl UniformsT for ObjectUniforms {
     ) -> Result<Vec<Arc<dyn DescriptorSet + Send + Sync + 'static>>> {
         let layout = pipeline_layout
             .descriptor_set_layout(0)
-            .ok_or::<Error>("can't find the descriptor set at the index 0".into())?;
+            .ok_or_else(|| -> Error { "can't find the descriptor set at the index 0".into() })?;
         let descriptor_set_builder = PersistentDescriptorSet::start(layout.clone())
                 .add_buffer(self.vs_uniform_buffer.clone())
                 .chain_err(|| "fail to add the vertex shader uniform buffer to the descriptor set for the object uniforms, binding = 0")?
@@ -234,7 +234,7 @@ impl<T: ShadersT> Material for ObjectMaterial<T> {
             material"
         })?;
         let fs_uniform_buffer = DeviceLocalBuffer::new(
-            device.clone(),
+            device,
             BufferUsage::uniform_buffer_transfer_destination(),
             vec![queue.family()],
         )
@@ -286,14 +286,8 @@ impl ObjectRenderer {
             .chain_err(|| "fail to initialize renderer for object with textures")?,
         );
         let no_texture_renderer = Arc::new(
-            MeshRenderer::init(
-                device.clone(),
-                queue.clone(),
-                subpass.clone(),
-                width,
-                height,
-            )
-            .chain_err(|| "fail to initialize renderer for object without textures")?,
+            MeshRenderer::init(device, queue, subpass, width, height)
+                .chain_err(|| "fail to initialize renderer for object without textures")?,
         );
         Ok(Self {
             with_texture_renderer,
@@ -350,22 +344,20 @@ impl Convert<[f32; 4], [OrderedFloat<f32>; 4]> {
 }
 
 fn create_index_to_vertex_map<'a>(
-    positions: &'a Vec<[f32; 3]>,
-    textures: Option<&'a Vec<[f32; 2]>>,
-    normals: &'a Vec<[f32; 3]>,
+    positions: &'a [[f32; 3]],
+    textures: Option<&'a [[f32; 2]]>,
+    normals: &'a [[f32; 3]],
 ) -> impl 'a + Fn(&'a IndexTuple) -> Result<(&'a [f32; 3], Option<&'a [f32; 2]>, Option<&'a [f32; 3]>)>
 {
     move |IndexTuple(position_index, texture_index, normal_index)| {
         Ok((
             positions
                 .get(*position_index)
-                .ok_or::<Error>("fail to find position with given index".into())?,
+                .ok_or_else(|| -> Error { "fail to find position with given index".into() })?,
             if let (Some(i), Some(textures)) = (texture_index, textures) {
-                Some(
-                    textures
-                        .get(*i)
-                        .ok_or::<Error>("fail to find texture coord with given index".into())?,
-                )
+                Some(textures.get(*i).ok_or_else(|| -> Error {
+                    "fail to find texture coord with given index".into()
+                })?)
             } else {
                 None
             },
@@ -373,9 +365,9 @@ fn create_index_to_vertex_map<'a>(
                 .map(|i| {
                     normals
                         .get(i)
-                        .ok_or::<Error>("fail to find normal with given index".into())
+                        .ok_or_else(|| -> Error { "fail to find normal with given index".into() })
                 })
-                .map_or(Ok(None), |v| v.map(Some))?,
+                .transpose()?,
         ))
     }
 }
@@ -385,12 +377,16 @@ pub struct Object<S> {
     uniforms: ObjectUniforms,
 }
 
+struct VertexAttributes<'a> {
+    position: &'a [[f32; 3]],
+    texture_coord: Option<&'a [[f32; 2]]>,
+    normal: &'a [[f32; 3]],
+}
+
 impl<S: 'static> Object<S> {
     fn new<V, K, Sh>(
         mesh_renderer: Arc<MeshRenderer<V, ObjectMaterial<Sh>>>,
-        position: &Vec<[f32; 3]>,
-        texture_coord: Option<&Vec<[f32; 2]>>,
-        normal: &Vec<[f32; 3]>,
+        vertex_attributes: VertexAttributes<'_>,
         group: &Group,
         material: Arc<ObjectMaterial<Sh>>,
         vertex_to_struct: impl Fn(
@@ -403,6 +399,11 @@ impl<S: 'static> Object<S> {
         K: Hash + Eq,
         Sh: ShadersT + 'static,
     {
+        let VertexAttributes {
+            position,
+            texture_coord,
+            normal,
+        } = vertex_attributes;
         let vertex_data = group
             .polys
             .iter()
@@ -425,29 +426,31 @@ impl<S: 'static> Object<S> {
 
     pub fn with_texture(
         renderer: ObjectRenderer,
-        position: &Vec<[f32; 3]>,
-        texture_coord: &Vec<[f32; 2]>,
-        normal: &Vec<[f32; 3]>,
+        position: &[[f32; 3]],
+        texture_coord: &[[f32; 2]],
+        normal: &[[f32; 3]],
         group: &Group,
         material: Arc<ObjectMaterial<TexturePhongShaders>>,
     ) -> Result<Self> {
         Self::new(
             renderer.with_texture_renderer,
-            position,
-            Some(texture_coord),
-            normal,
+            VertexAttributes {
+                position,
+                texture_coord: Some(texture_coord),
+                normal,
+            },
             group,
             material,
             |v| {
                 let (position, texture, normal) = v?;
-                let normal =
-                    normal.ok_or::<Error>("object without normals not supported".into())?;
-                let texture =
-                    texture.ok_or::<Error>("object without textures not supported".into())?;
+                let normal = normal
+                    .ok_or_else(|| -> Error { "object without normals not supported".into() })?;
+                let texture = texture
+                    .ok_or_else(|| -> Error { "object without textures not supported".into() })?;
                 Ok(ObjectWithTextureVertex {
                     in_position: [position[0], position[1], position[2], 1.0],
                     in_normal: [normal[0], normal[1], normal[2], 0.0],
-                    in_texture_coord: texture.clone(),
+                    in_texture_coord: *texture,
                 })
             },
             |v| {
@@ -463,22 +466,24 @@ impl<S: 'static> Object<S> {
 
     pub fn without_texture(
         renderer: ObjectRenderer,
-        position: &Vec<[f32; 3]>,
-        normal: &Vec<[f32; 3]>,
+        position: &[[f32; 3]],
+        normal: &[[f32; 3]],
         group: &Group,
         material: Arc<ObjectMaterial<NoTexturePhongShaders>>,
     ) -> Result<Self> {
         Self::new(
             renderer.no_texture_renderer,
-            position,
-            None,
-            normal,
+            VertexAttributes {
+                position,
+                texture_coord: None,
+                normal,
+            },
             group,
             material,
             |v| {
                 let (position, _, normal) = v?;
-                let normal =
-                    normal.ok_or::<Error>("object without normals not supported".into())?;
+                let normal = normal
+                    .ok_or_else(|| -> Error { "object without normals not supported".into() })?;
                 Ok(ObjectWithNoTextureVertex {
                     in_position: [position[0], position[1], position[2], 1.0],
                     in_normal: [normal[0], normal[1], normal[2], 0.0],

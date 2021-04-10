@@ -70,7 +70,7 @@ impl UniformsT for EmissiveUniforms {
     ) -> Result<Vec<Arc<dyn DescriptorSet + Send + Sync + 'static>>> {
         let layout = pipeline_layout
             .descriptor_set_layout(0)
-            .ok_or::<Error>("can't find the descriptor set at the index 0".into())?;
+            .ok_or_else(|| -> Error { "can't find the descriptor set at the index 0".into() })?;
         let descriptor_set = Arc::new(
             PersistentDescriptorSet::start(layout.clone())
                 .add_buffer(self.buffer.clone())
@@ -104,7 +104,7 @@ impl Material for EmissiveMaterial {
 
     fn create_uniforms(&self, device: Arc<Device>, queue: Arc<Queue>) -> Result<Self::Uniforms> {
         let buffer = DeviceLocalBuffer::new(
-            device.clone(),
+            device,
             BufferUsage::uniform_buffer_transfer_destination(),
             vec![queue.family()],
         )
@@ -188,7 +188,7 @@ impl<S> PointLight<S> {
     pub fn get_position(&self) -> Result<Point3D<f32, WorldSpace>> {
         Transform3D::from_array(self.uniforms.uniform.model)
             .transform_point3d(Point3D::<f32, S>::origin())
-            .ok_or("invalid point light model transform".into())
+            .ok_or_else(|| "invalid point light model transform".into())
     }
 
     pub fn get_intensity(&self) -> f32 {

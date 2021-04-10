@@ -132,7 +132,7 @@ where
                 &DynamicState::none(),
                 vec![self.vertex_buffer.clone()],
                 self.index_buffer.clone(),
-                self.descriptor_sets.iter().cloned().collect::<Vec<_>>(),
+                self.descriptor_sets.to_vec(),
                 (),
             )
             .chain_err(|| "fail to add the draw command to the command builder")?;

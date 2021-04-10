@@ -128,21 +128,11 @@ impl Renderer {
             )
             .chain_err(|| "fail to create point light renderer")?,
         );
-        let point_light = PointLight::new(
-            point_light_renderer.clone(),
-            LIGHT_INTENSITY,
-            [1.0, 0.0, 0.0],
-        )
-        .chain_err(|| "fail to create point light")?;
-        let object_renderer = ObjectRenderer::init(
-            device.clone(),
-            queue.clone(),
-            subpass.clone(),
-            width,
-            height,
-        )
-        .chain_err(|| "fail to create object renderer")?;
-        let depth_buffer = AttachmentImage::new(device.clone(), [width, height], D16Unorm)
+        let point_light = PointLight::new(point_light_renderer, LIGHT_INTENSITY, [1.0, 0.0, 0.0])
+            .chain_err(|| "fail to create point light")?;
+        let object_renderer = ObjectRenderer::init(device.clone(), queue, subpass, width, height)
+            .chain_err(|| "fail to create object renderer")?;
+        let depth_buffer = AttachmentImage::new(device, [width, height], D16Unorm)
             .chain_err(|| "fail to create the image for the depth attachment")?;
         Ok(Self {
             point_light: RefCell::new(point_light),
@@ -156,7 +146,7 @@ impl Renderer {
     pub fn load_model_and_texture(&mut self, model_and_texture: ModelAndTexture) -> Result<()> {
         let position = &model_and_texture.obj.position;
         let normal = &model_and_texture.obj.normal;
-        let texture_coord = model_and_texture
+        let texture_coord: Vec<_> = model_and_texture
             .obj
             .texture
             .iter()
@@ -172,26 +162,22 @@ impl Renderer {
                     let texture = model_and_texture
                         .textures
                         .get(texture_name)
-                        .ok_or::<Error>(
-                            format!("fail to find map_kd with name {}", texture_name).into(),
-                        )?
+                        .ok_or_else(|| -> Error {
+                            format!("fail to find map_kd with name {}", texture_name).into()
+                        })?
                         .clone();
-                    if name_to_texture_material
-                        .insert(
-                            name,
-                            Arc::new(
-                                ObjectMaterial::with_texture(
-                                    &self.object_renderer,
-                                    texture.as_ref(),
-                                    ks,
-                                )
-                                .chain_err(|| {
-                                    format!("fail to create the object material {}", name)
-                                })?,
-                            ),
-                        )
-                        .is_some()
-                    {
+                    let entry = name_to_texture_material.insert(
+                        name,
+                        Arc::new(
+                            ObjectMaterial::with_texture(
+                                &self.object_renderer,
+                                texture.as_ref(),
+                                ks,
+                            )
+                            .chain_err(|| format!("fail to create the object material {}", name))?,
+                        ),
+                    );
+                    if entry.is_some() {
                         return Err(format!(
                             "materials with duplicate name {} not supproted",
                             name
@@ -209,15 +195,13 @@ impl Renderer {
                             .into())
                         }
                     };
-                    if name_to_no_texture_material
-                        .insert(
-                            name,
-                            Arc::new(ObjectMaterial::without_texture(kd, ks).chain_err(|| {
-                                format!("fail to create the object material {}", name)
-                            })?),
-                        )
-                        .is_some()
-                    {
+                    let entry = name_to_no_texture_material.insert(
+                        name,
+                        Arc::new(ObjectMaterial::without_texture(kd, ks).chain_err(|| {
+                            format!("fail to create the object material {}", name)
+                        })?),
+                    );
+                    if entry.is_some() {
                         return Err(format!(
                             "materials with duplicate name {} not supproted",
                             name
@@ -288,7 +272,7 @@ impl Renderer {
     ) -> Result<()> {
         let framebuffer = Arc::new(
             Framebuffer::start(self.render_pass.clone())
-                .add(image.clone())
+                .add(image)
                 .chain_err(|| "fail to add the color attachment to the framebuffer")?
                 .add(self.depth_buffer.clone())
                 .chain_err(|| "fail to add the depth attachment to the framebuffer")?
