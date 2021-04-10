@@ -16,7 +16,7 @@ use vulkano::{
 };
 
 use super::{
-    material::{Material, UniformsT},
+    material::{Material, SetCamera, UniformsT},
     renderer::{Mesh, MeshData, MeshRenderer, SimpleVertex},
     shaders::light::Shaders as EmissiveShaders,
 };
@@ -37,7 +37,7 @@ pub struct EmissiveUniforms {
     buffer: Arc<DeviceLocalBuffer<EmissiveUniform>>,
 }
 
-impl UniformsT for EmissiveUniforms {
+impl SetCamera for EmissiveUniforms {
     fn set_model_matrix(&mut self, mat: [f32; 16]) {
         self.uniform.model.copy_from_slice(&mat);
     }
@@ -49,7 +49,9 @@ impl UniformsT for EmissiveUniforms {
     fn set_proj_matrix(&mut self, mat: [f32; 16]) {
         self.uniform.proj.copy_from_slice(&mat);
     }
+}
 
+impl UniformsT for EmissiveUniforms {
     fn update_buffers(
         &self,
         cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,

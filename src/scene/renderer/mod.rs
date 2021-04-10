@@ -22,7 +22,7 @@ use vulkano::{
 
 use super::{
     light::{PointLight, PointLightRenderer},
-    material::{Material, UniformsT},
+    material::{Material, SetCamera, UniformsT},
     object::{Object, ObjectMaterial, ObjectRenderer},
     Camera, TriangleSpace, WorldSpace,
 };

@@ -14,7 +14,7 @@ use vulkano::{
 use super::{shaders::ShadersT, Camera};
 use crate::errors::*;
 
-pub trait UniformsT: Sized + Send + Sync + 'static {
+pub trait SetCamera {
     fn set_model_matrix(&mut self, mat: [f32; 16]);
     fn set_view_matrix(&mut self, mat: [f32; 16]);
     fn set_proj_matrix(&mut self, mat: [f32; 16]);
@@ -23,7 +23,9 @@ pub trait UniformsT: Sized + Send + Sync + 'static {
         self.set_view_matrix(camera.get_view_transform().to_array());
         self.set_proj_matrix(camera.get_projection_transform().to_array());
     }
+}
 
+pub trait UniformsT: Sized + Send + Sync + 'static {
     fn update_buffers(
         &self,
         cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,

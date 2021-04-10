@@ -29,7 +29,7 @@ use vulkano::{
     sync::GpuFuture,
 };
 
-use super::{super::shaders::ShadersT, Camera, Material, UniformsT, WorldSpace};
+use super::{super::shaders::ShadersT, Camera, Material, SetCamera, UniformsT, WorldSpace};
 use crate::errors::*;
 
 pub trait SimpleVertex: VertexT {
@@ -136,7 +136,10 @@ impl<V: VertexT, M: Material, S> Mesh<V, M, S> {
     }
 }
 
-impl<V: VertexT, M: Material, S> MeshT<S> for Mesh<V, M, S> {
+impl<V: VertexT, M: Material, S> MeshT<S> for Mesh<V, M, S>
+where
+    M::Uniforms: SetCamera,
+{
     fn prepare_draw_commands(
         &self,
         cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,

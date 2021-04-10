@@ -31,7 +31,7 @@ use vulkano::{
 };
 
 use super::{
-    material::{Material, UniformsT},
+    material::{Material, SetCamera, UniformsT},
     renderer::{MeshData, MeshRenderer, MeshT},
     shaders::{
         phong::NoTextureShaders as NoTexturePhongShaders,
@@ -94,7 +94,7 @@ pub struct ObjectUniforms {
     texture: Option<Texture>,
 }
 
-impl UniformsT for ObjectUniforms {
+impl SetCamera for ObjectUniforms {
     fn set_model_matrix(&mut self, mat: [f32; 16]) {
         self.vs_uniform.model.copy_from_slice(&mat);
     }
@@ -106,7 +106,9 @@ impl UniformsT for ObjectUniforms {
     fn set_proj_matrix(&mut self, mat: [f32; 16]) {
         self.vs_uniform.proj.copy_from_slice(&mat);
     }
+}
 
+impl UniformsT for ObjectUniforms {
     fn update_buffers(
         &self,
         cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,
