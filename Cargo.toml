@@ -4,6 +4,9 @@ version = "0.1.0"
 authors = ["06393993lky"]
 edition = "2018"
 
+[workspace]
+members = ["games202-hw-vulkano-macros"]
+
 [dependencies]
 imgui = "*"
 imgui-vulkano-renderer = "0.7.0"
@@ -19,3 +22,5 @@ obj = "*"
 tinyfiledialogs = "*"
 image = "*"
 ordered-float = "*"
+paste = "*"
+games202-hw-vulkano-macros = { path = "games202-hw-vulkano-macros" }

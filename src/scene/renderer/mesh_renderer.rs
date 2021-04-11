@@ -25,7 +25,10 @@ use vulkano::{
     sync::GpuFuture,
 };
 
-use super::{super::shaders::ShadersT, Material, SetCamera, UniformsT};
+use super::{
+    super::shaders::{ShadersT, UniformsT},
+    Material, SetCamera,
+};
 use crate::errors::*;
 
 pub trait SimpleVertex: VertexT {
@@ -120,7 +123,7 @@ pub struct Mesh<V: VertexT, M: Material, S> {
 
 impl<V: VertexT, M: Material, S> MeshT<S> for Mesh<V, M, S>
 where
-    M::Uniforms: SetCamera,
+    <<M as Material>::Shaders as ShadersT>::Uniforms: SetCamera,
 {
     fn draw_commands(
         &self,
@@ -147,6 +150,8 @@ pub struct Renderer<V: VertexT, M: Material> {
     pipeline_layout: Box<dyn PipelineLayoutAbstract>,
     phantom: PhantomData<(V, M)>,
 }
+
+type Uniforms<M> = <<M as Material>::Shaders as ShadersT>::Uniforms;
 
 impl<V: VertexT, M: Material> Renderer<V, M> {
     pub fn init(
@@ -200,7 +205,7 @@ impl<V: VertexT, M: Material> Renderer<V, M> {
         self: &Arc<Self>,
         data: MeshData<V>,
         material: &M,
-    ) -> Result<(Mesh<V, M, S>, M::Uniforms)> {
+    ) -> Result<(Mesh<V, M, S>, Uniforms<M>)> {
         let MeshData {
             vertices: vertex_data,
             indices: index_data,

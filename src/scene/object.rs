@@ -10,12 +10,7 @@ use image::RgbaImage;
 use obj::{Group, IndexTuple};
 use ordered_float::OrderedFloat;
 use vulkano::{
-    buffer::{device_local::DeviceLocalBuffer, BufferUsage},
     command_buffer::{pool::standard::StandardCommandPoolBuilder, AutoCommandBufferBuilder},
-    descriptor::{
-        descriptor_set::{DescriptorSet, PersistentDescriptorSet},
-        pipeline_layout::PipelineLayoutAbstract,
-    },
     device::{Device, Queue},
     format::R8G8B8A8Unorm,
     framebuffer::{RenderPassAbstract, Subpass},
@@ -27,11 +22,14 @@ use vulkano::{
 
 use super::{
     light::PointLight,
-    material::{Material, SetCamera, UniformsT},
-    renderer::{MeshData, MeshRenderer, MeshT},
+    material::{Material, SetCamera},
+    renderer::{Mesh, MeshData, MeshRenderer, MeshT},
     shaders::{
-        phong::NoTextureShaders as NoTexturePhongShaders,
-        phong::TextureShaders as TexturePhongShaders, ShadersT,
+        phong::no_texture::{
+            FsUniform as NoTexturePhongFsUniform, Shaders as NoTexturePhongShaders,
+        },
+        phong::with_texture::{FsUniform as TexturePhongFsUniform, Shaders as TexturePhongShaders},
+        ShadersT, Texture, UniformsT,
     },
     Camera, WorldSpace,
 };
@@ -75,112 +73,16 @@ pub struct FSUniform {
     light_intensity: f32,
 }
 
-#[derive(Clone)]
-struct Texture {
-    image: Arc<ImmutableImage<R8G8B8A8Unorm>>,
-    sampler: Arc<Sampler>,
-}
-
-pub struct ObjectUniforms {
-    vs_uniform: VSUniform,
-    fs_uniform: FSUniform,
-
-    vs_uniform_buffer: Arc<DeviceLocalBuffer<VSUniform>>,
-    fs_uniform_buffer: Arc<DeviceLocalBuffer<FSUniform>>,
-    texture: Option<Texture>,
-}
-
-impl SetCamera for ObjectUniforms {
-    fn set_model_matrix(&mut self, mat: [f32; 16]) {
-        self.vs_uniform.model.copy_from_slice(&mat);
-    }
-
-    fn set_view_matrix(&mut self, mat: [f32; 16]) {
-        self.vs_uniform.view.copy_from_slice(&mat);
-    }
-
-    fn set_proj_matrix(&mut self, mat: [f32; 16]) {
-        self.vs_uniform.proj.copy_from_slice(&mat);
-    }
-}
-
-impl UniformsT for ObjectUniforms {
-    fn update_buffers(
-        &self,
-        cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,
-    ) -> Result<()> {
-        cmd_buf_builder
-            .update_buffer(self.vs_uniform_buffer.clone(), self.vs_uniform.clone())
-            .chain_err(|| {
-                "fail to issue update vertex shader uniform buffer commands for object uniforms"
-            })?
-            .update_buffer(self.fs_uniform_buffer.clone(), self.fs_uniform.clone())
-            .chain_err(|| {
-                "fail to issue update fragment shader uniform buffer commands for object uniforms"
-            })?;
-        Ok(())
-    }
-
-    fn create_descriptor_sets(
-        &self,
-        pipeline_layout: &dyn PipelineLayoutAbstract,
-    ) -> Result<Vec<Arc<dyn DescriptorSet + Send + Sync + 'static>>> {
-        let layout = pipeline_layout
-            .descriptor_set_layout(0)
-            .ok_or_else(|| -> Error { "can't find the descriptor set at the index 0".into() })?;
-        let descriptor_set_builder = PersistentDescriptorSet::start(layout.clone())
-                .add_buffer(self.vs_uniform_buffer.clone())
-                .chain_err(|| "fail to add the vertex shader uniform buffer to the descriptor set for the object uniforms, binding = 0")?
-                .add_buffer(self.fs_uniform_buffer.clone())
-                .chain_err(|| "fail to add the fragment shader uniform buffer to the descriptor set for the object uniforms, binding = 1")?;
-        let descriptor_set: Arc<dyn DescriptorSet + Send + Sync + 'static> = match self.texture {
-            Some(ref texture) => Arc::new(descriptor_set_builder
-                .add_sampled_image(texture.image.clone(), texture.sampler.clone())
-                .chain_err(|| "fail to add the image with the sampler to the descriptor set for the object uniforms, binding = 2")?
-                .build()
-                .chain_err(|| "fail to create the descriptor set for the object uniforms")?
-            ),
-            None => Arc::new(
-                descriptor_set_builder
-                .build()
-                .chain_err(|| "fail to create the descriptor set for the object uniforms")?
-            ),
-        };
-        Ok(vec![descriptor_set])
-    }
-}
-
-impl ObjectUniforms {
-    pub fn set_light_pos(&mut self, pos: &Point3D<f32, WorldSpace>) {
-        self.fs_uniform.light_pos = [pos.x, pos.y, pos.z, 1.0];
-    }
-
-    pub fn set_camera_pos(&mut self, camera: &Camera) {
-        let camera_pos = camera.get_position();
-        self.fs_uniform.camera_pos = [camera_pos.x, camera_pos.y, camera_pos.z, 1.0];
-    }
-
-    pub fn set_light_intensity(&mut self, light_intensity: f32) {
-        self.fs_uniform.light_intensity = light_intensity;
-    }
-}
-
-pub struct ObjectMaterial<S> {
-    texture: Option<Texture>,
+pub struct TextureObjectMaterial {
+    texture: Texture,
     ks: [f32; 3],
     kd: [f32; 3],
-    phantom: PhantomData<S>,
 }
 
-impl ObjectMaterial<TexturePhongShaders> {
-    pub fn with_texture(
-        renderer: &ObjectRenderer,
-        texture: &RgbaImage,
-        ks: [f32; 3],
-    ) -> Result<Self> {
+impl TextureObjectMaterial {
+    pub fn new(renderer: &ObjectRenderer, texture: &RgbaImage, ks: [f32; 3]) -> Result<Self> {
         let mesh_renderer = &renderer.with_texture_renderer;
         let (image, image_init) = ImmutableImage::from_iter(
-            // FIXIT: read the picture vertically flipped otherwise the uv coordinates are incorrect
             texture.pixels().map(|p| p.0),
             Dimensions::Dim2d {
                 width: texture.width(),
@@ -197,74 +99,78 @@ impl ObjectMaterial<TexturePhongShaders> {
             .wait(None)
             .chain_err(|| "fail to wait for the texture image being initialized")?;
         Ok(Self {
-            texture: Some(Texture {
+            texture: Texture {
                 image,
                 sampler: Sampler::simple_repeat_linear(mesh_renderer.get_device()),
-            }),
+            },
             kd: Default::default(),
             ks,
-            phantom: PhantomData,
         })
     }
 }
 
-impl ObjectMaterial<NoTexturePhongShaders> {
-    pub fn without_texture(kd: [f32; 3], ks: [f32; 3]) -> Result<Self> {
-        Ok(Self {
-            texture: None,
-            kd,
-            ks,
-            phantom: PhantomData,
-        })
-    }
-}
+impl Material for TextureObjectMaterial {
+    type Shaders = TexturePhongShaders;
 
-impl<T: ShadersT> Material for ObjectMaterial<T> {
-    type Uniforms = ObjectUniforms;
-    type Shaders = T;
-
-    fn create_uniforms(&self, device: Arc<Device>, queue: Arc<Queue>) -> Result<Self::Uniforms> {
-        let vs_uniform_buffer = DeviceLocalBuffer::new(
-            device.clone(),
-            BufferUsage::uniform_buffer_transfer_destination(),
-            vec![queue.family()],
-        )
-        .chain_err(|| {
-            "fail to create device local buffer to store the vertex shader uniform of the object \
-            material"
-        })?;
-        let fs_uniform_buffer = DeviceLocalBuffer::new(
+    fn create_uniforms(
+        &self,
+        device: Arc<Device>,
+        queue: Arc<Queue>,
+    ) -> Result<<TexturePhongShaders as ShadersT>::Uniforms> {
+        <TexturePhongShaders as ShadersT>::Uniforms::new(
             device,
-            BufferUsage::uniform_buffer_transfer_destination(),
-            vec![queue.family()],
-        )
-        .chain_err(|| {
-            "fail to create device local buffer to store the fragment shader uniform of the object \
-            material"
-        })?;
-        Ok(ObjectUniforms {
-            vs_uniform: Default::default(),
-            fs_uniform: FSUniform {
+            queue,
+            Default::default(),
+            TexturePhongFsUniform {
                 kd: [self.kd[0], self.kd[1], self.kd[2], 0.0],
                 ks: [self.ks[0], self.ks[1], self.ks[2], 0.0],
                 light_pos: Default::default(),
                 camera_pos: Default::default(),
                 light_intensity: Default::default(),
             },
+            self.texture.clone(),
+        )
+    }
+}
 
-            vs_uniform_buffer,
-            fs_uniform_buffer,
-            texture: self.texture.clone(),
-        })
+pub struct NoTextureObjectMaterial {
+    ks: [f32; 3],
+    kd: [f32; 3],
+}
+
+impl NoTextureObjectMaterial {
+    pub fn new(kd: [f32; 3], ks: [f32; 3]) -> Result<Self> {
+        Ok(Self { kd, ks })
+    }
+}
+
+impl Material for NoTextureObjectMaterial {
+    type Shaders = NoTexturePhongShaders;
+
+    fn create_uniforms(
+        &self,
+        device: Arc<Device>,
+        queue: Arc<Queue>,
+    ) -> Result<<NoTexturePhongShaders as ShadersT>::Uniforms> {
+        <NoTexturePhongShaders as ShadersT>::Uniforms::new(
+            device,
+            queue,
+            Default::default(),
+            NoTexturePhongFsUniform {
+                kd: [self.kd[0], self.kd[1], self.kd[2], 0.0],
+                ks: [self.ks[0], self.ks[1], self.ks[2], 0.0],
+                light_pos: Default::default(),
+                camera_pos: Default::default(),
+                light_intensity: Default::default(),
+            },
+        )
     }
 }
 
 #[derive(Clone)]
 pub struct ObjectRenderer {
-    with_texture_renderer:
-        Arc<MeshRenderer<ObjectWithTextureVertex, ObjectMaterial<TexturePhongShaders>>>,
-    no_texture_renderer:
-        Arc<MeshRenderer<ObjectWithNoTextureVertex, ObjectMaterial<NoTexturePhongShaders>>>,
+    with_texture_renderer: Arc<MeshRenderer<ObjectWithTextureVertex, TextureObjectMaterial>>,
+    no_texture_renderer: Arc<MeshRenderer<ObjectWithNoTextureVertex, NoTextureObjectMaterial>>,
 }
 
 impl ObjectRenderer {
@@ -372,9 +278,40 @@ fn create_index_to_vertex_map<'a>(
     }
 }
 
-pub struct Object<S> {
-    pub mesh: Box<dyn MeshT<S>>,
-    uniforms: ObjectUniforms,
+pub trait ObjectUniforms: UniformsT + SetCamera {
+    fn set_light_pos(&mut self, _light_pos: &Point3D<f32, WorldSpace>);
+    fn set_camera_pos(&mut self, _camera: &Camera);
+    fn set_light_intensity(&mut self, _light_intensity: f32);
+}
+
+impl ObjectUniforms for <NoTexturePhongShaders as ShadersT>::Uniforms {
+    fn set_light_pos(&mut self, light_pos: &Point3D<f32, WorldSpace>) {
+        self.fs_uniform.light_pos = [light_pos.x, light_pos.y, light_pos.z, 1.0];
+    }
+
+    fn set_camera_pos(&mut self, camera: &Camera) {
+        let camera_pos = camera.get_position();
+        self.fs_uniform.camera_pos = [camera_pos.x, camera_pos.y, camera_pos.z, 1.0];
+    }
+
+    fn set_light_intensity(&mut self, light_intensity: f32) {
+        self.fs_uniform.light_intensity = light_intensity;
+    }
+}
+
+impl ObjectUniforms for <TexturePhongShaders as ShadersT>::Uniforms {
+    fn set_light_pos(&mut self, light_pos: &Point3D<f32, WorldSpace>) {
+        self.fs_uniform.light_pos = [light_pos.x, light_pos.y, light_pos.z, 1.0];
+    }
+
+    fn set_camera_pos(&mut self, camera: &Camera) {
+        let camera_pos = camera.get_position();
+        self.fs_uniform.camera_pos = [camera_pos.x, camera_pos.y, camera_pos.z, 1.0];
+    }
+
+    fn set_light_intensity(&mut self, light_intensity: f32) {
+        self.fs_uniform.light_intensity = light_intensity;
+    }
 }
 
 struct VertexAttributes<'a> {
@@ -383,12 +320,23 @@ struct VertexAttributes<'a> {
     normal: &'a [[f32; 3]],
 }
 
-impl<S: 'static> Object<S> {
-    fn new<V, K, Sh>(
-        mesh_renderer: Arc<MeshRenderer<V, ObjectMaterial<Sh>>>,
+pub struct ObjectImpl<V: Vertex, M: Material, S> {
+    mesh: Mesh<V, M, S>,
+    uniforms: <<M as Material>::Shaders as ShadersT>::Uniforms,
+}
+
+type TextureObject<S> = ObjectImpl<ObjectWithTextureVertex, TextureObjectMaterial, S>;
+type NoTextureObject<S> = ObjectImpl<ObjectWithNoTextureVertex, NoTextureObjectMaterial, S>;
+
+impl<V: Vertex, M: Material, S> ObjectImpl<V, M, S>
+where
+    <<M as Material>::Shaders as ShadersT>::Uniforms: ObjectUniforms,
+{
+    fn new<K>(
+        mesh_renderer: Arc<MeshRenderer<V, M>>,
         vertex_attributes: VertexAttributes<'_>,
         group: &Group,
-        material: Arc<ObjectMaterial<Sh>>,
+        material: Arc<M>,
         vertex_to_struct: impl Fn(
             Result<(&[f32; 3], Option<&[f32; 2]>, Option<&[f32; 3]>)>,
         ) -> Result<V>,
@@ -397,7 +345,8 @@ impl<S: 'static> Object<S> {
     where
         V: Vertex,
         K: Hash + Eq,
-        Sh: ShadersT + 'static,
+        M: Material + 'static,
+        <<M as Material>::Shaders as ShadersT>::Uniforms: ObjectUniforms + SetCamera,
     {
         let VertexAttributes {
             position,
@@ -418,10 +367,50 @@ impl<S: 'static> Object<S> {
         let (mesh, uniforms) = mesh_renderer
             .create_mesh(mesh_data, material.as_ref())
             .chain_err(|| "fail to create mesh")?;
-        Ok(Self {
-            mesh: Box::new(mesh),
-            uniforms,
-        })
+        Ok(Self { mesh, uniforms })
+    }
+}
+
+pub enum Object<S> {
+    WithTexture(TextureObject<S>),
+    NoTexture(NoTextureObject<S>),
+}
+
+impl<S> Object<S> {
+    pub fn without_texture(
+        renderer: ObjectRenderer,
+        position: &[[f32; 3]],
+        normal: &[[f32; 3]],
+        group: &Group,
+        material: Arc<NoTextureObjectMaterial>,
+    ) -> Result<Self> {
+        NoTextureObject::new(
+            renderer.no_texture_renderer,
+            VertexAttributes {
+                position,
+                texture_coord: None,
+                normal,
+            },
+            group,
+            material,
+            |v| {
+                let (position, _, normal) = v?;
+                let normal = normal
+                    .ok_or_else(|| -> Error { "object without normals not supported".into() })?;
+                Ok(ObjectWithNoTextureVertex {
+                    in_position: [position[0], position[1], position[2], 1.0],
+                    in_normal: [normal[0], normal[1], normal[2], 0.0],
+                })
+            },
+            |v| {
+                (
+                    Convert::<[f32; 4], _>::to(&v.in_position),
+                    Convert::<[f32; 4], _>::to(&v.in_normal),
+                )
+            },
+        )
+        .chain_err(|| "fail to create an object without textures")
+        .map(Self::NoTexture)
     }
 
     pub fn with_texture(
@@ -430,9 +419,9 @@ impl<S: 'static> Object<S> {
         texture_coord: &[[f32; 2]],
         normal: &[[f32; 3]],
         group: &Group,
-        material: Arc<ObjectMaterial<TexturePhongShaders>>,
+        material: Arc<TextureObjectMaterial>,
     ) -> Result<Self> {
-        Self::new(
+        TextureObject::new(
             renderer.with_texture_renderer,
             VertexAttributes {
                 position,
@@ -462,41 +451,7 @@ impl<S: 'static> Object<S> {
             },
         )
         .chain_err(|| "fail to create an object with textures")
-    }
-
-    pub fn without_texture(
-        renderer: ObjectRenderer,
-        position: &[[f32; 3]],
-        normal: &[[f32; 3]],
-        group: &Group,
-        material: Arc<ObjectMaterial<NoTexturePhongShaders>>,
-    ) -> Result<Self> {
-        Self::new(
-            renderer.no_texture_renderer,
-            VertexAttributes {
-                position,
-                texture_coord: None,
-                normal,
-            },
-            group,
-            material,
-            |v| {
-                let (position, _, normal) = v?;
-                let normal = normal
-                    .ok_or_else(|| -> Error { "object without normals not supported".into() })?;
-                Ok(ObjectWithNoTextureVertex {
-                    in_position: [position[0], position[1], position[2], 1.0],
-                    in_normal: [normal[0], normal[1], normal[2], 0.0],
-                })
-            },
-            |v| {
-                (
-                    Convert::<[f32; 4], _>::to(&v.in_position),
-                    Convert::<[f32; 4], _>::to(&v.in_normal),
-                )
-            },
-        )
-        .chain_err(|| "fail to create an object without textures")
+        .map(Self::WithTexture)
     }
 
     pub fn prepare_draw_commands<T>(
@@ -504,23 +459,35 @@ impl<S: 'static> Object<S> {
         cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,
         model_transform: &Transform3D<f32, S, WorldSpace>,
         camera: &Camera,
-        // TODO: replace with &PointLight
         light: &PointLight<T>,
     ) -> Result<()> {
-        self.uniforms.set_light_pos(
+        let uniforms: &mut dyn ObjectUniforms = match self {
+            Self::WithTexture(ref mut obj) => &mut obj.uniforms,
+            Self::NoTexture(ref mut obj) => &mut obj.uniforms,
+        };
+        uniforms.set_light_pos(
             &light
                 .get_position()
                 .chain_err(|| "fail to get light position")?,
         );
-        self.uniforms.set_camera_pos(camera);
-        self.uniforms.set_light_intensity(light.get_intensity());
-        self.uniforms.set_model_matrix(model_transform.to_array());
-        self.uniforms.set_view_proj_matrix_from_camera(camera);
-        self.uniforms
-            .update_buffers(cmd_buf_builder)
-            .chain_err(|| {
-                "fail to add the update buffer for uniforms command to the command builder"
-            })?;
+        uniforms.set_camera_pos(camera);
+        uniforms.set_light_intensity(light.get_intensity());
+        uniforms.set_model_matrix(model_transform.to_array());
+        uniforms.set_view_proj_matrix_from_camera(camera);
+        uniforms.update_buffers(cmd_buf_builder).chain_err(|| {
+            "fail to add the update buffer for uniforms command to the command builder"
+        })?;
         Ok(())
+    }
+
+    pub fn draw_commands(
+        &self,
+        cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,
+    ) -> Result<()> {
+        let mesh: &dyn MeshT<S> = match self {
+            Self::WithTexture(ref obj) => &obj.mesh,
+            Self::NoTexture(ref obj) => &obj.mesh,
+        };
+        mesh.draw_commands(cmd_buf_builder)
     }
 }

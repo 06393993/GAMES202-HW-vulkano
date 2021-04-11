@@ -22,8 +22,8 @@ use vulkano::{
 
 use super::{
     light::{PointLight, PointLightRenderer},
-    material::{Material, SetCamera, UniformsT},
-    object::{Object, ObjectMaterial, ObjectRenderer},
+    material::{Material, SetCamera},
+    object::{NoTextureObjectMaterial, Object, ObjectRenderer, TextureObjectMaterial},
     Camera, TriangleSpace, WorldSpace,
 };
 use crate::errors::*;
@@ -169,12 +169,10 @@ impl Renderer {
                     let entry = name_to_texture_material.insert(
                         name,
                         Arc::new(
-                            ObjectMaterial::with_texture(
-                                &self.object_renderer,
-                                texture.as_ref(),
-                                ks,
-                            )
-                            .chain_err(|| format!("fail to create the object material {}", name))?,
+                            TextureObjectMaterial::new(&self.object_renderer, texture.as_ref(), ks)
+                                .chain_err(|| {
+                                    format!("fail to create the object material {}", name)
+                                })?,
                         ),
                     );
                     if entry.is_some() {
@@ -197,7 +195,7 @@ impl Renderer {
                     };
                     let entry = name_to_no_texture_material.insert(
                         name,
-                        Arc::new(ObjectMaterial::without_texture(kd, ks).chain_err(|| {
+                        Arc::new(NoTextureObjectMaterial::new(kd, ks).chain_err(|| {
                             format!("fail to create the object material {}", name)
                         })?),
                     );
@@ -309,7 +307,6 @@ impl Renderer {
         for object in self.objects.iter() {
             object
                 .borrow()
-                .mesh
                 .draw_commands(cmd_buf_builder)
                 .chain_err(|| "fail to issue draw commands for the object mesh")?;
         }

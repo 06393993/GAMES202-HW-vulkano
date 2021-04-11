@@ -7,12 +7,14 @@ dependencies = [
  "clipboard",
  "error-chain",
  "euclid",
+ "games202-hw-vulkano-macros",
  "image",
  "imgui",
  "imgui-vulkano-renderer",
  "imgui-winit-support",
  "obj",
  "ordered-float",
+ "paste",
  "tinyfiledialogs",
  "vulkano",
  "vulkano-shaders",
@@ -576,6 +578,18 @@ name = "fuchsia-zircon-sys"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3dcaa9ae7725d12cdb85b3ad99a434db70b468c09ded17e012d86b5c1010f7a7"
+
+[[package]]
+name = "games202-hw-vulkano-macros"
+version = "0.1.0"
+dependencies = [
+ "paste",
+ "quote",
+ "syn",
+ "vulkano",
+ "vulkano-shaders",
+ "vulkano-win",
+]
 
 [[package]]
 name = "gif"
@@ -1161,6 +1175,12 @@ dependencies = [
  "smallvec",
  "winapi 0.3.9",
 ]
+
+[[package]]
+name = "paste"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acbf547ad0c65e31259204bd90935776d1c693cec2f4ff7abb7a1bbbd40dfe58"
 
 [[package]]
 name = "percent-encoding"

@@ -5,11 +5,7 @@
 
 use std::sync::Arc;
 
-use vulkano::{
-    command_buffer::{pool::standard::StandardCommandPoolBuilder, AutoCommandBufferBuilder},
-    descriptor::{descriptor_set::DescriptorSet, pipeline_layout::PipelineLayoutAbstract},
-    device::{Device, Queue},
-};
+use vulkano::device::{Device, Queue};
 
 use super::{shaders::ShadersT, Camera};
 use crate::errors::*;
@@ -25,20 +21,12 @@ pub trait SetCamera {
     }
 }
 
-pub trait UniformsT: Sized + Send + Sync + 'static {
-    fn update_buffers(
-        &self,
-        cmd_buf_builder: &mut AutoCommandBufferBuilder<StandardCommandPoolBuilder>,
-    ) -> Result<()>;
-    fn create_descriptor_sets(
-        &self,
-        pipeline_layout: &dyn PipelineLayoutAbstract,
-    ) -> Result<Vec<Arc<dyn DescriptorSet + Send + Sync + 'static>>>;
-}
-
 pub trait Material {
-    type Uniforms: UniformsT;
     type Shaders: ShadersT;
 
-    fn create_uniforms(&self, device: Arc<Device>, queue: Arc<Queue>) -> Result<Self::Uniforms>;
+    fn create_uniforms(
+        &self,
+        device: Arc<Device>,
+        queue: Arc<Queue>,
+    ) -> Result<<Self::Shaders as ShadersT>::Uniforms>;
 }
